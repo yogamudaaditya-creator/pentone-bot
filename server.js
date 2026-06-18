@@ -34,6 +34,7 @@ Kalau customer sedang menjawab pertanyaan bot sebelumnya, tetap lanjutkan flow m
 Contoh:
 - Bot tanya quantity, customer jawab "belum tau cuma kayaknya dikit 70an" berarti lanjut flow.
 - Bot tanya tanggal terima, customer jawab "akhir Juli" berarti lanjut flow.
+- Bot tanya nama, customer jawab "Anna" berarti simpan customer_name dan lanjut flow.
 
 Kalau harus diam, output JSON valid:
 {
@@ -74,7 +75,7 @@ Contoh tone yang benar:
 Contoh tone yang salah:
 "Baik Kak, terima kasih telah menghubungi kami."
 "Hai kakkk siappp banget yaaa."
-"Siaap kak 😊🙏✨"
+"Siaap kak."
 "Sorry banget kak."
 
 ## PRINSIP CHAT
@@ -647,7 +648,7 @@ function extractQuantityFromText(text) {
     return Number.isFinite(qty) && qty > 0 ? qty : null;
   }
 
-  const approxQtyMatch = raw.match(/(?:sekitar|kira-kira|kurang lebih|kayaknya|kayanya|dikit|sekitaran|estimasi|mungkin|+-)?\s*(\d{1,5})\s*(an|-an)/i);
+  const approxQtyMatch = raw.match(/(?:sekitar|kira-kira|kurang lebih|kayaknya|kayanya|dikit|sekitaran|estimasi|mungkin|\+\-)?\s*(\d{1,5})\s*(an|-an)/i);
   if (approxQtyMatch) {
     const qty = Number(approxQtyMatch[1]);
     return Number.isFinite(qty) && qty > 0 ? qty : null;
@@ -681,6 +682,63 @@ function getPriceListUrl(quantity) {
   if (qtyFloor === null) return null;
   if (qtyFloor < 30) return null;
   return qtyFloor < 150 ? PL_LINK_BELOW_150 : PL_LINK_150_UP;
+}
+
+function extractNeededDateText(content, conversationState) {
+  const rawOriginal = String(content || '').trim();
+  const raw = rawOriginal.toLowerCase();
+
+  if (!rawOriginal) return null;
+
+  const hasEventOnly =
+    (raw.includes('acara') || raw.includes('wedding') || raw.includes('nikah')) &&
+    !raw.includes('terima') &&
+    !raw.includes('diterima') &&
+    !raw.includes('sampai') &&
+    !raw.includes('dikirim');
+
+  if (hasEventOnly) return null;
+
+  const lastAssistant = [...conversationState.history]
+    .reverse()
+    .find((msg) => msg.role === 'assistant');
+
+  const botAskedNeededDate = lastAssistant?.content?.toLowerCase().includes('diterima tanggal berapa') ||
+    lastAssistant?.content?.toLowerCase().includes('mau diterima tanggal berapa') ||
+    lastAssistant?.content?.toLowerCase().includes('undangannya mau diterima');
+
+  const hasDateSignal =
+    raw.includes('besok') ||
+    raw.includes('minggu depan') ||
+    raw.includes('bulan depan') ||
+    raw.includes('awal ') ||
+    raw.includes('tengah ') ||
+    raw.includes('akhir ') ||
+    raw.includes('januari') ||
+    raw.includes('februari') ||
+    raw.includes('maret') ||
+    raw.includes('april') ||
+    raw.includes('mei') ||
+    raw.includes('juni') ||
+    raw.includes('juli') ||
+    raw.includes('agustus') ||
+    raw.includes('september') ||
+    raw.includes('oktober') ||
+    raw.includes('november') ||
+    raw.includes('desember') ||
+    /\d{1,2}[/-]\d{1,2}/.test(raw) ||
+    /\d{1,2}\s*(jan|feb|mar|apr|mei|jun|jul|agu|ags|sep|okt|nov|des)/i.test(raw);
+
+  if (botAskedNeededDate && hasDateSignal) return rawOriginal;
+
+  if (
+    (raw.includes('terima') || raw.includes('diterima') || raw.includes('sampai') || raw.includes('dikirim')) &&
+    hasDateSignal
+  ) {
+    return rawOriginal;
+  }
+
+  return null;
 }
 
 function getUrgencyStatus(neededDateText) {
@@ -1151,12 +1209,19 @@ async function processIncomingMessage(reqBody) {
   });
 
   const extractedQty = extractQuantityFromText(content);
-
   if (
     extractedQty !== null &&
     (conversationState.data.quantity === null || conversationState.data.quantity === undefined)
   ) {
     conversationState.data.quantity = extractedQty;
+  }
+
+  const extractedNeededDate = extractNeededDateText(content, conversationState);
+  if (
+    extractedNeededDate !== null &&
+    (conversationState.data.needed_date === null || conversationState.data.needed_date === undefined)
+  ) {
+    conversationState.data.needed_date = extractedNeededDate;
   }
 
   const localFacts = buildLocalFactsFromServer(conversationState);
@@ -1202,6 +1267,7 @@ async function processIncomingMessage(reqBody) {
         step: 'parse_error',
       }),
     });
+    conversationStore.set(key, conversationState);
     return;
   }
 
@@ -1287,7 +1353,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'Pentone Pricelist Bot',
-    version: 'mvp-pricelist-v2',
+    version: 'mvp-pricelist-v3-fixed-regex',
     provider: LLM_PROVIDER,
     allowed_inbox_id: ALLOWED_INBOX_ID,
     jakarta_context: jakartaContext,
@@ -1308,9 +1374,14 @@ app.get('/debug/conversations', (req, res) => {
   res.json(data);
 });
 
+app.get('/debug/reset', (req, res) => {
+  conversationStore.clear();
+  res.json({ status: 'ok', message: 'conversationStore cleared via GET' });
+});
+
 app.post('/debug/reset', (req, res) => {
   conversationStore.clear();
-  res.json({ status: 'ok', message: 'conversationStore cleared' });
+  res.json({ status: 'ok', message: 'conversationStore cleared via POST' });
 });
 
 // ========== START SERVER ==========
