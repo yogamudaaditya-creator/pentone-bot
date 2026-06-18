@@ -9,6 +9,9 @@ const CHATWOOT_API_KEY = process.env.CHATWOOT_API_KEY;
 const LLM_API_KEY      = process.env.LLM_API_KEY;
 const LLM_PROVIDER     = process.env.LLM_PROVIDER || 'claude';
 
+// GANTI INBOX ID INI kalau mau pindah inbox
+const ALLOWED_INBOX_ID = 115258;
+
 // ========== SYSTEM PROMPT ==========
 const SYSTEM_PROMPT = `Kamu adalah CS bot untuk Pentone (undangan nikah custom) dan Leve (souvenir wedding). Tugasmu mengkualifikasi calon customer yang chat masuk SEBELUM di-takeover tim manusia.
 
@@ -200,9 +203,10 @@ app.post('/webhook', async (req, res) => {
     const content = req.body.content;
     const accountId = req.body.account?.id;
     const conversationId = req.body.conversation?.id;
+    const inboxId = req.body.conversation?.inbox_id;
 
-    // Skip kalau bukan incoming atau kosong
-    if (messageType !== 'incoming' || !content || !accountId || !conversationId) {
+    // Skip kalau bukan incoming, kosong, atau BUKAN inbox test
+    if (messageType !== 'incoming' || !content || !accountId || !conversationId || inboxId !== ALLOWED_INBOX_ID) {
       return res.sendStatus(200);
     }
 
@@ -228,7 +232,7 @@ app.post('/webhook', async (req, res) => {
       const clean = rawResponse.replace(/```json|```/g, '').trim();
       parsed = JSON.parse(clean);
     } catch (parseErr) {
-      console.error(`[Chat ${conversationId}] JSON parse error, sending raw`);
+      console.error(`[Chat ${conversationId}] JSON parse error, sending fallback`);
       parsed = {
         reply: 'Halo kak! Makasih udah chat Pentone 🙏 Boleh tau kak, lagi cari undangan nikah, souvenir, atau dua-duanya?',
         handover: false,
