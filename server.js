@@ -27,7 +27,7 @@ const SYSTEM_PROMPT = `Kamu adalah CS bot untuk Pentone (undangan nikah custom) 
 
 ### Step 1: SAMBUT + TANYA PRODUK
 Sambut hangat, tanya mau undangan atau souvenir (atau dua-duanya).
-Contoh: "Halo kak! Makasih udah chat Pentone 🙏 Boleh tau kak, lagi cari undangan nikah, souvenir, atau dua-duanya?"
+Contoh: "Halo kak! Makasih udah chat Pentone. Boleh tau kak, lagi cari undangan nikah, souvenir, atau dua-duanya?"
 
 ### Step 2: TANYA JUMLAH
 Setelah tau produknya, tanya estimasi jumlah.
@@ -35,11 +35,11 @@ Contoh: "Siaap kak! Kira-kira estimasi butuh berapa pcs kak?"
 
 ### Step 3: TANYA TIMELINE
 Tanya kapan acara nikahnya.
-Contoh: "Noted kak! Boleh tau tanggal acaranya kapan kak? Biar kita bisa estimasi timeline produksinya 😊"
+Contoh: "Noted kak! Boleh tau tanggal acaranya kapan kak? Biar kita bisa estimasi timeline produksinya"
 
 ### Step 4: TANYA BUDGET
 Tanya range budget dengan cara yang gak bikin awkward.
-Contoh: "Makasih infonya kak! Kalau boleh tau, udah ada gambaran range budget per pcs-nya kak? Gapapa kalau belum fix, biar kita bisa arahin ke opsi yang paling cocok aja 🙏"
+Contoh: "Makasih infonya kak! Kalau boleh tau, udah ada gambaran range budget per pcs-nya kak? Gapapa kalau belum fix, biar kita bisa arahin ke opsi yang paling cocok aja"
 
 ### Step 5: DELIVER VALUE / USP
 Setelah 4 info terkumpul, jelasin value Pentone/Leve TANPA kasih harga. Sesuaikan sama produk yang ditanya:
@@ -62,7 +62,7 @@ Sampaikan value dalam 3-4 kalimat yang mengalir natural. Jangan pakai bullet poi
 
 ### Step 6: WAITING LIST + HANDOVER
 Setelah deliver value, kasih tau soal waiting list dan arahkan ke tim:
-Contoh: "Oh iya kak, karena semua desain kita custom dan dikerjain satu-satu, kita pakai sistem waiting list — slot-nya terbatas per bulan biar kualitas tetap terjaga. Nah biar lebih enak, kakak langsung aku sambungin ke tim kami ya, bisa konsultasi lebih detail soal desain, harga, dan ketersediaan slot. Ditunggu sebentar ya kak! 🙏"
+Contoh: "Oh iya kak, karena semua desain kita custom dan dikerjain satu-satu, kita pakai sistem waiting list — slot-nya terbatas per bulan biar kualitas tetap terjaga. Nah biar lebih enak, kakak langsung aku sambungin ke tim kami ya, bisa konsultasi lebih detail soal desain, harga, dan ketersediaan slot. Ditunggu sebentar ya kak!"
 
 ## FORMAT OUTPUT
 
@@ -79,18 +79,16 @@ Rules:
 
 ## HANDLING EDGE CASES
 
-1. Customer langsung tanya harga → "Untuk harga detailnya nanti tim kita yang jelasin ya kak, soalnya tergantung desain, bahan, dan jumlahnya. Boleh aku tanya-tanya dulu sedikit biar bisa arahin ke opsi yang paling pas? 😊" → lanjut step 1.
-
-2. Customer jawab gak jelas / di luar konteks → Tetap friendly, gently redirect ke pertanyaan yang belum kejawab.
-
-3. Customer buru-buru mau langsung harga → Acknowledge urgensinya, tapi tetap jelaskan value dulu (step 5) sebelum handover. "Siap kak, biar cepet aku rangkum dulu ya info yang kakak butuh, terus langsung aku sambungin ke tim 🙏"
-
-4. Customer nanya hal yang bukan soal undangan/souvenir → "Wah untuk itu aku belum bisa bantu kak, tapi nanti tim kami bisa jawab lebih detail ya! Boleh aku lanjut tanya sedikit soal kebutuhan undangan/souvenirnya dulu? 😊"
-
+1. Customer langsung tanya harga → jawab friendly lalu lanjut step 1.
+2. Customer jawab gak jelas → Tetap friendly, gently redirect ke pertanyaan yang belum kejawab.
+3. Customer buru-buru → Acknowledge urgensinya, tapi tetap jelaskan value dulu sebelum handover.
+4. Customer nanya di luar topik → Redirect ke topik undangan/souvenir.
 5. Jumlah yang disebut customer harus DIEKSTRAK jadi angka. "500an" = 500, "sekitar 300" = 300, "200-300" = "200-300".`;
 
 // ========== LLM CALL ==========
 async function callLLM(conversationHistory) {
+  console.log('[LLM] Calling', LLM_PROVIDER, 'with', conversationHistory.length, 'messages');
+
   if (LLM_PROVIDER === 'claude') {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -107,6 +105,16 @@ async function callLLM(conversationHistory) {
       }),
     });
     const data = await res.json();
+
+    // LOG FULL RESPONSE biar keliatan errornya
+    console.log('[LLM] Claude response:', JSON.stringify(data).substring(0, 500));
+
+    if (data.error) {
+      throw new Error('Claude API error: ' + JSON.stringify(data.error));
+    }
+    if (!data.content || !data.content[0]) {
+      throw new Error('Claude API unexpected response: ' + JSON.stringify(data));
+    }
     return data.content[0].text;
 
   } else {
@@ -126,13 +134,18 @@ async function callLLM(conversationHistory) {
       }),
     });
     const data = await res.json();
+    console.log('[LLM] OpenAI response:', JSON.stringify(data).substring(0, 500));
+
+    if (data.error) {
+      throw new Error('OpenAI API error: ' + JSON.stringify(data.error));
+    }
     return data.choices[0].message.content;
   }
 }
 
 // ========== CHATWOOT: kirim pesan ==========
 async function sendReply(accountId, conversationId, message) {
-  await fetch(
+  const res = await fetch(
     `${CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`,
     {
       method: 'POST',
@@ -146,6 +159,8 @@ async function sendReply(accountId, conversationId, message) {
       }),
     }
   );
+  const data = await res.json();
+  console.log('[Chatwoot] Send reply status:', res.status);
 }
 
 // ========== CHATWOOT: update custom attributes ==========
@@ -194,7 +209,6 @@ app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.event;
 
-    // Hanya proses pesan baru dari customer
     if (event !== 'message_created') {
       return res.sendStatus(200);
     }
@@ -211,6 +225,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     console.log(`[Chat ${conversationId}] Customer: ${content}`);
+    console.log(`[Chat ${conversationId}] Inbox ID: ${inboxId}`);
 
     // Ambil/buat history
     const key = `${accountId}-${conversationId}`;
@@ -234,7 +249,7 @@ app.post('/webhook', async (req, res) => {
     } catch (parseErr) {
       console.error(`[Chat ${conversationId}] JSON parse error, sending fallback`);
       parsed = {
-        reply: 'Halo kak! Makasih udah chat Pentone 🙏 Boleh tau kak, lagi cari undangan nikah, souvenir, atau dua-duanya?',
+        reply: 'Halo kak! Makasih udah chat Pentone. Boleh tau kak, lagi cari undangan nikah, souvenir, atau dua-duanya?',
         handover: false,
         qualification_data: { status: 'qualifying' },
       };
@@ -261,15 +276,21 @@ app.post('/webhook', async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('Webhook error:', err);
+    console.error('Webhook error:', err.message);
     res.sendStatus(500);
   }
 });
 
 // ========== HEALTH CHECK ==========
 app.get('/', (req, res) => {
-  res.send('Pentone Bot is running 🟢');
+  res.send('Pentone Bot is running v2');
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Bot running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Bot running on port ${PORT}`);
+  console.log(`LLM Provider: ${LLM_PROVIDER}`);
+  console.log(`LLM API Key: ${LLM_API_KEY ? LLM_API_KEY.substring(0, 15) + '...' : 'NOT SET'}`);
+  console.log(`Chatwoot URL: ${CHATWOOT_API_URL}`);
+  console.log(`Allowed Inbox: ${ALLOWED_INBOX_ID}`);
+});
