@@ -1,7 +1,12 @@
 import express from 'express';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Pastisukses8!';
+const ADMIN_DATA_FILE = './admin-data.json';
 
 // ========== CONFIG ==========
 const CHATWOOT_API_URL = process.env.CHATWOOT_API_URL || 'https://app.chatwoot.com';
@@ -473,6 +478,39 @@ Aturan tambahan:
 - Jangan pernah pakai emoji atau emotikon di text bubble.
 `;
 
+// ========== ADMIN DATA ==========
+let adminData;
+try {
+  if (existsSync(ADMIN_DATA_FILE)) {
+    adminData = JSON.parse(readFileSync(ADMIN_DATA_FILE, 'utf-8'));
+  } else {
+    adminData = { knowledgeBase: [], rules: [], customPrompt: null, settings: { delayMin: 2, delayMax: 5, botActive: true, offlineMessage: 'Makasih udah chat Pentone kak! Saat ini tim kami lagi offline, nanti kita follow up ya.' } };
+  }
+} catch { adminData = { knowledgeBase: [], rules: [], customPrompt: null, settings: { delayMin: 2, delayMax: 5, botActive: true, offlineMessage: 'Makasih udah chat Pentone kak! Saat ini tim kami lagi offline, nanti kita follow up ya.' } }; }
+if (!adminData.settings) adminData.settings = { delayMin: 2, delayMax: 5, botActive: true, offlineMessage: '' };
+if (!adminData.knowledgeBase) adminData.knowledgeBase = [];
+if (!adminData.rules) adminData.rules = [];
+
+function saveAdminData() {
+  try { writeFileSync(ADMIN_DATA_FILE, JSON.stringify(adminData, null, 2)); } catch(e) { console.error('Save admin data error:', e.message); }
+}
+
+function getActivePrompt() {
+  let prompt = adminData.customPrompt || SYSTEM_PROMPT;
+  if (adminData.knowledgeBase.length > 0) {
+    prompt += '\n\n## KNOWLEDGE BASE TAMBAHAN\nGunakan informasi berikut untuk menjawab customer:\n';
+    adminData.knowledgeBase.forEach(k => { prompt += `\n### ${k.topic}\n${k.content}\n`; });
+  }
+  if (adminData.rules.length > 0) {
+    prompt += '\n\n## RULES TAMBAHAN\nIkuti aturan kondisional berikut:\n';
+    adminData.rules.forEach(r => { prompt += `\n- KALAU ${r.condition} → MAKA ${r.action}`; });
+    prompt += '\n';
+  }
+  return prompt;
+}
+
+function escapeHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
 // ========== IN-MEMORY STORE ==========
 const conversationStore = new Map();
 
@@ -504,6 +542,7 @@ function getOrCreateConversationState(key) {
         auto_reply_disclosed: false,
         pricelist_shared: false,
         waiting_list_explained: false,
+        skipped: false,
       },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -1064,7 +1103,7 @@ async function callLLM(conversationHistory, runtimeContext) {
 ${JSON.stringify(runtimeContext, null, 2)}
 `;
 
-  const systemWithRuntime = `${SYSTEM_PROMPT}\n\n${runtimePrompt}`;
+  const systemWithRuntime = `${getActivePrompt()}\n\n${runtimePrompt}`;
   const safeHistory = trimHistory(conversationHistory);
 
   console.log('[LLM] Calling', LLM_PROVIDER, 'with', safeHistory.length, 'messages');
@@ -1262,6 +1301,65 @@ async function handoverToHuman(accountId, conversationId) {
   }
 }
 
+// ========== NEW CONVERSATION CHECK ==========
+async function isExistingConversation(accountId, conversationId) {
+  try {
+    const res = await fetch(
+      `${CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`,
+      { headers: { api_access_token: CHATWOOT_API_KEY } }
+    );
+    if (!res.ok) return false;
+    const data = await res.json();
+    const messages = data.payload || [];
+    // Cek apakah sudah ada outgoing messages (dari bot atau agen)
+    const outgoing = messages.filter(m => m.message_type === 1);
+    return outgoing.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// ========== CUSTOMER NAME EXTRACTION ==========
+function capitalizeFirst(str) {
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+function extractCustomerName(content, conversationState) {
+  const raw = String(content || '').trim();
+  if (!raw || raw.length > 60) return null;
+
+  // Cek apakah bot terakhir nanya nama
+  const lastAssistant = [...conversationState.history].reverse().find(m => m.role === 'assistant');
+  const lastContent = String(lastAssistant?.content || '').toLowerCase();
+  const botAskedName = lastContent.includes('nama kakak') || lastContent.includes('nama kak') || lastContent.includes('siapa nama') || lastContent.includes('boleh tau nama') || lastContent.includes('nama siapa');
+
+  // Pattern: "nama saya/aku X"
+  const namaMatch = raw.match(/nama\s+(?:saya|aku|gue|gw|ku)\s+(\w+)/i);
+  if (namaMatch) return capitalizeFirst(namaMatch[1]);
+
+  // Pattern: "panggil aja X" / "panggil X"
+  const panggilMatch = raw.match(/panggil\s+(?:aja\s+)?(\w+)/i);
+  if (panggilMatch) return capitalizeFirst(panggilMatch[1]);
+
+  // Pattern: "saya/aku X" kalau bot nanya nama
+  if (botAskedName) {
+    const shortMatch = raw.match(/(?:saya|aku|gue|gw)\s+(\w+)/i);
+    if (shortMatch && shortMatch[1].length >= 2) return capitalizeFirst(shortMatch[1]);
+  }
+
+  // Pattern: jawaban singkat (1-3 kata) kalau bot nanya nama
+  if (botAskedName) {
+    const words = raw.replace(/[.,!?]/g, '').trim().split(/\s+/);
+    if (words.length <= 3) {
+      const nonNames = ['kak','ya','iya','hai','halo','hi','hey','ok','oke','okay','saya','aku','gue','gw','nama','dong','deh','nih','sih','yaa','yak','min','mas','mba','mbak','bang','bu','pak','om','tante','makasih','thanks','thank','terima','kasih'];
+      const nameCandidate = words.find(w => !nonNames.includes(w.toLowerCase()) && w.length >= 2 && /^[A-Za-z]/.test(w));
+      if (nameCandidate) return capitalizeFirst(nameCandidate);
+    }
+  }
+
+  return null;
+}
+
 // ========== MAIN PROCESSOR ==========
 async function processIncomingMessage(reqBody) {
   const messageType = reqBody.message_type;
@@ -1289,6 +1387,23 @@ async function processIncomingMessage(reqBody) {
   const conversationState = getOrCreateConversationState(key);
   const jakartaContext = getJakartaContext();
 
+  // SKIP: conversation yang sudah pernah ditangani agen/bot sebelum deploy ini
+  if (conversationState.flags.skipped) {
+    console.log(`[Chat ${conversationId}] Skipped (existing conversation)`);
+    return;
+  }
+
+  // CEK: kalau ini pertama kali kita lihat conversation ini, cek apakah sudah ada balasan sebelumnya
+  if (conversationState.history.length === 0) {
+    const existing = await isExistingConversation(accountId, conversationId);
+    if (existing) {
+      console.log(`[Chat ${conversationId}] Skipping — already has outgoing messages`);
+      conversationState.flags.skipped = true;
+      conversationStore.set(key, conversationState);
+      return;
+    }
+  }
+
   conversationState.updated_at = new Date().toISOString();
 
   console.log(`[Chat ${conversationId}] Customer: ${content}`);
@@ -1313,6 +1428,16 @@ async function processIncomingMessage(reqBody) {
     (conversationState.data.needed_date === null || conversationState.data.needed_date === undefined)
   ) {
     conversationState.data.needed_date = extractedNeededDate;
+  }
+
+  // Extract customer name dari server-side (biar gak tanya ulang)
+  const extractedName = extractCustomerName(content, conversationState);
+  if (
+    extractedName !== null &&
+    (conversationState.data.customer_name === null || conversationState.data.customer_name === undefined)
+  ) {
+    conversationState.data.customer_name = extractedName;
+    console.log(`[Chat ${conversationId}] Extracted name: ${extractedName}`);
   }
 
   const localFacts = buildLocalFactsFromServer(conversationState);
@@ -1437,6 +1562,131 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// ========== ADMIN PANEL ==========
+app.get('/admin', (req, res) => {
+  const token = req.query.token;
+  const tab = req.query.tab || 'prompt';
+  const saved = req.query.saved;
+
+  if (!token) {
+    return res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pentone Bot Admin</title>
+<style>*{box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#e0e0e0;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
+.login{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:32px;width:360px}h1{font-size:20px;margin-bottom:8px}.sub{color:#888;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:10px;background:#0f0f0f;border:1px solid #333;border-radius:8px;color:#fff;font-size:14px;margin-bottom:16px}
+button{width:100%;padding:10px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer}button:hover{background:#1d4ed8}</style></head>
+<body><div class="login"><h1>Pentone Bot Admin</h1><p class="sub">Masukkin password</p>
+<input type="password" id="pw" placeholder="Password" autofocus onkeydown="if(event.key==='Enter')go()">
+<button onclick="go()">Login</button></div>
+<script>function go(){window.location.href='/admin?token='+encodeURIComponent(document.getElementById('pw').value)+'&tab=prompt'}</script></body></html>`);
+  }
+
+  if (token !== ADMIN_PASSWORD) return res.send('<script>alert("Password salah!");window.location.href="/admin"</script>');
+
+  const t = encodeURIComponent(token);
+  const savedBanner = saved ? '<div style="background:#065f46;color:#6ee7b7;padding:12px;border-radius:8px;margin-bottom:16px;font-size:14px">Saved!</div>' : '';
+  const activePrompt = adminData.customPrompt || SYSTEM_PROMPT;
+
+  let content = '';
+
+  if (tab === 'prompt') {
+    content = `${savedBanner}<div class="card"><h2>System Prompt</h2><p class="desc">Edit cara bot bales. Save langsung aktif tanpa restart.</p>
+<form method="POST" action="/admin/prompt?token=${t}">
+<textarea name="prompt" style="min-height:400px">${escapeHtml(activePrompt)}</textarea><br><br>
+<button type="submit" class="btn btn-primary">Save Prompt</button>
+<button type="button" class="btn" style="background:#333;color:#aaa;margin-left:8px" onclick="if(confirm('Reset ke prompt default?'))window.location.href='/admin/prompt/reset?token=${t}'">Reset Default</button>
+</form></div>`;
+  } else if (tab === 'knowledge') {
+    let items = adminData.knowledgeBase.map(k => `<div class="item"><div class="ic"><strong>${escapeHtml(k.topic)}</strong><p>${escapeHtml(k.content)}</p></div>
+<form method="POST" action="/admin/kb/del?token=${t}" style="margin:0"><input type="hidden" name="id" value="${k.id}"><button type="submit" class="btn btn-danger">Hapus</button></form></div>`).join('');
+    content = `${savedBanner}<div class="card"><h2>Knowledge Base</h2><p class="desc">Info yang bot bisa pake buat jawab. Otomatis di-inject ke prompt.</p>
+${items || '<p style="color:#666;font-size:13px">Belum ada. Tambah di bawah.</p>'}<hr>
+<h2>Tambah Knowledge</h2><form method="POST" action="/admin/kb/add?token=${t}">
+<label>Topik</label><input type="text" name="topic" required placeholder="Contoh: Minimum order, Sample kit"><br>
+<label>Isi info</label><textarea name="content" style="min-height:100px" required placeholder="Info yang bot bisa gunakan untuk menjawab"></textarea><br><br>
+<button type="submit" class="btn btn-primary">Tambah</button></form></div>`;
+  } else if (tab === 'rules') {
+    let items = adminData.rules.map(r => `<div class="item"><div class="ic"><strong>KALAU: ${escapeHtml(r.condition)}</strong><p>MAKA: ${escapeHtml(r.action)}</p></div>
+<form method="POST" action="/admin/rules/del?token=${t}" style="margin:0"><input type="hidden" name="id" value="${r.id}"><button type="submit" class="btn btn-danger">Hapus</button></form></div>`).join('');
+    content = `${savedBanner}<div class="card"><h2>Rules / Kondisi</h2><p class="desc">Aturan tambahan. Format: KALAU [kondisi] → MAKA [aksi]</p>
+${items || '<p style="color:#666;font-size:13px">Belum ada rules.</p>'}<hr>
+<h2>Tambah Rule</h2><form method="POST" action="/admin/rules/add?token=${t}">
+<label>KALAU (kondisi)</label><input type="text" name="condition" required placeholder="Contoh: jumlah di atas 500 pcs"><br>
+<label>MAKA (aksi)</label><textarea name="action" style="min-height:80px" required placeholder="Contoh: Kasih link catalog premium dan bilang bisa custom"></textarea><br><br>
+<button type="submit" class="btn btn-primary">Tambah Rule</button></form></div>`;
+  } else if (tab === 'settings') {
+    content = `${savedBanner}<div class="card"><h2>Settings</h2><p class="desc">Pengaturan umum</p>
+<form method="POST" action="/admin/settings?token=${t}">
+<label>Bot aktif</label><select name="botActive" style="width:100%;padding:10px;background:#0f0f0f;border:1px solid #333;border-radius:8px;color:#e0e0e0;font-size:14px;margin-bottom:16px">
+<option value="true" ${adminData.settings.botActive!==false?'selected':''}>Aktif</option><option value="false" ${adminData.settings.botActive===false?'selected':''}>Non-aktif</option></select>
+<div style="display:flex;gap:12px;margin-bottom:16px"><div><label>Delay min (detik)</label><input type="number" name="delayMin" value="${adminData.settings.delayMin||2}" style="width:80px"></div>
+<div><label>Delay max (detik)</label><input type="number" name="delayMax" value="${adminData.settings.delayMax||5}" style="width:80px"></div></div>
+<label>Pesan offline (kalau bot non-aktif)</label><textarea name="offlineMessage" style="min-height:80px">${escapeHtml(adminData.settings.offlineMessage||'')}</textarea><br><br>
+<button type="submit" class="btn btn-primary">Save Settings</button></form></div>`;
+  }
+
+  res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pentone Bot Admin</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#e0e0e0;padding:20px}
+.container{max-width:900px;margin:0 auto}h1{color:#fff;margin-bottom:8px;font-size:24px}.subtitle{color:#888;margin-bottom:24px;font-size:14px}
+.tabs{display:flex;gap:4px;margin-bottom:24px;flex-wrap:wrap}.tab{padding:10px 20px;background:#1a1a1a;border:1px solid #333;border-radius:8px;cursor:pointer;color:#aaa;font-size:14px;text-decoration:none}
+.tab.active{background:#2563eb;color:#fff;border-color:#2563eb}.card{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:24px;margin-bottom:16px}
+.card h2{font-size:16px;margin-bottom:4px;color:#fff}.desc{color:#888;font-size:13px;margin-bottom:16px}
+textarea{width:100%;background:#0f0f0f;border:1px solid #333;border-radius:8px;padding:12px;color:#e0e0e0;font-family:monospace;font-size:13px;resize:vertical}
+input[type="text"],input[type="number"]{width:100%;background:#0f0f0f;border:1px solid #333;border-radius:8px;padding:10px 12px;color:#e0e0e0;font-size:14px;margin-bottom:12px}
+label{display:block;color:#aaa;font-size:13px;margin-bottom:6px}
+.btn{padding:10px 24px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:500}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}
+.btn-danger{background:#dc2626;color:#fff;padding:6px 12px;font-size:12px}
+.item{background:#0f0f0f;border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:start;gap:12px}
+.ic{flex:1}.ic strong{color:#fff;font-size:14px}.ic p{color:#aaa;font-size:13px;margin-top:4px}
+hr{border:none;border-top:1px solid #333;margin:16px 0}</style></head>
+<body><div class="container"><h1>Pentone Bot Admin</h1><p class="subtitle">Atur prompt, knowledge base, rules, dan settings</p>
+<div class="tabs">
+<a href="/admin?tab=prompt&token=${t}" class="tab ${tab==='prompt'?'active':''}">System Prompt</a>
+<a href="/admin?tab=knowledge&token=${t}" class="tab ${tab==='knowledge'?'active':''}">Knowledge Base</a>
+<a href="/admin?tab=rules&token=${t}" class="tab ${tab==='rules'?'active':''}">Rules</a>
+<a href="/admin?tab=settings&token=${t}" class="tab ${tab==='settings'?'active':''}">Settings</a>
+</div>${content}</div></body></html>`);
+});
+
+app.post('/admin/prompt', (req,res) => {
+  if(req.query.token!==ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+  adminData.customPrompt = req.body.prompt; saveAdminData();
+  res.redirect(`/admin?tab=prompt&token=${encodeURIComponent(req.query.token)}&saved=1`);
+});
+app.get('/admin/prompt/reset', (req,res) => {
+  if(req.query.token!==ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+  adminData.customPrompt = null; saveAdminData();
+  res.redirect(`/admin?tab=prompt&token=${encodeURIComponent(req.query.token)}&saved=1`);
+});
+app.post('/admin/kb/add', (req,res) => {
+  if(req.query.token!==ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+  adminData.knowledgeBase.push({ id: Date.now().toString(), topic: req.body.topic, content: req.body.content }); saveAdminData();
+  res.redirect(`/admin?tab=knowledge&token=${encodeURIComponent(req.query.token)}&saved=1`);
+});
+app.post('/admin/kb/del', (req,res) => {
+  if(req.query.token!==ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+  adminData.knowledgeBase = adminData.knowledgeBase.filter(k => k.id !== req.body.id); saveAdminData();
+  res.redirect(`/admin?tab=knowledge&token=${encodeURIComponent(req.query.token)}&saved=1`);
+});
+app.post('/admin/rules/add', (req,res) => {
+  if(req.query.token!==ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+  adminData.rules.push({ id: Date.now().toString(), condition: req.body.condition, action: req.body.action }); saveAdminData();
+  res.redirect(`/admin?tab=rules&token=${encodeURIComponent(req.query.token)}&saved=1`);
+});
+app.post('/admin/rules/del', (req,res) => {
+  if(req.query.token!==ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+  adminData.rules = adminData.rules.filter(r => r.id !== req.body.id); saveAdminData();
+  res.redirect(`/admin?tab=rules&token=${encodeURIComponent(req.query.token)}&saved=1`);
+});
+app.post('/admin/settings', (req,res) => {
+  if(req.query.token!==ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+  adminData.settings.botActive = req.body.botActive === 'true';
+  adminData.settings.delayMin = parseInt(req.body.delayMin)||2;
+  adminData.settings.delayMax = parseInt(req.body.delayMax)||5;
+  adminData.settings.offlineMessage = req.body.offlineMessage; saveAdminData();
+  res.redirect(`/admin?tab=settings&token=${encodeURIComponent(req.query.token)}&saved=1`);
+});
+
 // ========== HEALTH CHECK ==========
 app.get('/', (req, res) => {
   const jakartaContext = getJakartaContext();
@@ -1482,5 +1732,6 @@ app.listen(PORT, () => {
   console.log(`LLM API Key: ${LLM_API_KEY ? LLM_API_KEY.substring(0, 15) + '...' : 'NOT SET'}`);
   console.log(`Chatwoot URL: ${CHATWOOT_API_URL}`);
   console.log(`Active Inbox: all`);
+  console.log(`Admin panel: /admin`);
   console.log(`Timezone: ${BUSINESS_TIMEZONE}`);
 });
