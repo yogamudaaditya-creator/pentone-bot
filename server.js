@@ -10,8 +10,6 @@ const LLM_API_KEY = process.env.LLM_API_KEY;
 const LLM_PROVIDER = process.env.LLM_PROVIDER || 'claude';
 const PORT = process.env.PORT || 3000;
 
-const ALLOWED_INBOX_ID = Number(process.env.ALLOWED_INBOX_ID || 115258);
-
 const BUSINESS_TIMEZONE = 'Asia/Jakarta';
 
 const PL_LINK_BELOW_150 =
@@ -1180,12 +1178,13 @@ async function processIncomingMessage(reqBody) {
   const conversationId = reqBody.conversation?.id;
   const inboxId = Number(reqBody.conversation?.inbox_id);
 
+  // Skip kalau bukan incoming message atau data penting kosong.
+  // Bot aktif di semua inbox.
   if (
     messageType !== 'incoming' ||
     !content ||
     !accountId ||
-    !conversationId ||
-    inboxId !== ALLOWED_INBOX_ID
+    !conversationId
   ) {
     return;
   }
@@ -1353,9 +1352,9 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'Pentone Pricelist Bot',
-    version: 'mvp-pricelist-v3-fixed-regex',
+    version: 'mvp-pricelist-v3-all-inbox',
     provider: LLM_PROVIDER,
-    allowed_inbox_id: ALLOWED_INBOX_ID,
+    active_inbox: 'all',
     jakarta_context: jakartaContext,
     waiting_list_until_month: getWaitingListUntilMonth(),
   });
@@ -1390,6 +1389,6 @@ app.listen(PORT, () => {
   console.log(`LLM Provider: ${LLM_PROVIDER}`);
   console.log(`LLM API Key: ${LLM_API_KEY ? LLM_API_KEY.substring(0, 15) + '...' : 'NOT SET'}`);
   console.log(`Chatwoot URL: ${CHATWOOT_API_URL}`);
-  console.log(`Allowed Inbox: ${ALLOWED_INBOX_ID}`);
+  console.log(`Active Inbox: all`);
   console.log(`Timezone: ${BUSINESS_TIMEZONE}`);
 });
