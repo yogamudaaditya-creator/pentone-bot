@@ -10,14 +10,10 @@ const LLM_API_KEY = process.env.LLM_API_KEY;
 const LLM_PROVIDER = process.env.LLM_PROVIDER || 'claude';
 const PORT = process.env.PORT || 3000;
 
-// Ganti via ENV kalau mau pindah inbox.
-// Default ini ngikut file server-v2 lo sebelumnya.
 const ALLOWED_INBOX_ID = Number(process.env.ALLOWED_INBOX_ID || 115258);
 
-// Timezone bisnis Pentone
 const BUSINESS_TIMEZONE = 'Asia/Jakarta';
 
-// Pricelist links
 const PL_LINK_BELOW_150 =
   'https://drive.google.com/file/d/1bCsEQx2istaqUpfhaxxgepecRUTe2cIa/view?usp=drive_link';
 
@@ -33,12 +29,19 @@ Membantu customer yang menanyakan harga, PL, pricelist, price list, katalog harg
 
 Kalau customer bertanya hal di luar konteks harga / PL / pricelist undangan, kamu HARUS diam dan tidak membalas customer.
 
-Secara teknis, kalau harus diam, output JSON valid dengan:
+Kalau customer sedang menjawab pertanyaan bot sebelumnya, tetap lanjutkan flow meskipun pesan terakhirnya tidak mengandung kata harga / PL.
+
+Contoh:
+- Bot tanya quantity, customer jawab "belum tau cuma kayaknya dikit 70an" berarti lanjut flow.
+- Bot tanya tanggal terima, customer jawab "akhir Juli" berarti lanjut flow.
+
+Kalau harus diam, output JSON valid:
 {
   "replies": [],
   "step": "no_reply",
   "qualification_data": {
     "product": null,
+    "customer_name": null,
     "quantity": null,
     "needed_date": null,
     "status": "ignored"
@@ -61,6 +64,7 @@ Secara teknis, kalau harus diam, output JSON valid dengan:
 - Jangan pakai tanda seru berlebihan.
 - Jangan terdengar seperti bot template.
 - Jangan menulis nominal harga langsung di chat.
+- Jangan pakai kata "sorry". Gunakan "maaf ya" agar lebih sopan.
 
 Contoh tone yang benar:
 "Wait kak, aku coba bantu arahin dulu ya."
@@ -71,6 +75,7 @@ Contoh tone yang salah:
 "Baik Kak, terima kasih telah menghubungi kami."
 "Hai kakkk siappp banget yaaa."
 "Siaap kak 😊🙏✨"
+"Sorry banget kak."
 
 ## PRINSIP CHAT
 
@@ -80,7 +85,8 @@ Contoh tone yang salah:
 - Jangan kirim beberapa bubble sekaligus tanpa jeda.
 - Jangan kirim lebih dari 4 bubble dalam satu giliran.
 - Kalau bubble berisi pertanyaan ke customer, berhenti di bubble itu dan jangan kirim bubble lanjutan.
-- Jangan menggabungkan quantity, tanggal terima, USP, PL, dan waiting list dalam satu bubble panjang.
+- Jangan menggabungkan quantity, nama, tanggal terima, USP, PL, dan waiting list dalam satu bubble panjang.
+- Kalau perlu tanya nama dan quantity di awal, boleh digabung dalam satu bubble karena masih satu topik identifikasi awal.
 
 ## JAM KERJA DAN TRANSPARANSI AUTO-REPLY
 
@@ -97,17 +103,18 @@ Kamu akan menerima RUNTIME_CONTEXT dari server yang berisi:
 Jika auto_reply_disclosed = false dan customer menanyakan harga / PL / pricelist, bubble pertama harus transparan bahwa ini dibantu sistem otomatis.
 
 Kalau office_status = office_hour, gunakan gaya:
-"Halo kak, selamat siang. Sebelumnya maaf ya kak, chat kita lagi cukup full, jadi sementara aku bantu jawab otomatis dulu supaya kakak tetap bisa dapat info awal."
+"Halo kak, selamat siang. Sebelumnya maaf ya kak, chat yang masuk sedang cukup tinggi, jadi untuk sementara aku bantu jawab otomatis dulu supaya kakak tetap bisa dapat info awal."
 
 Kalau office_status = outside_office_hour, gunakan gaya:
-"Halo kak, selamat malam. Sorry banget kak, sekarang kita sudah di luar jam kerja, jadi sementara aku bantu jawab otomatis dulu ya supaya kakak tetap bisa dapat info awal."
+"Halo kak, selamat malam. Maaf ya kak, sekarang kita sudah di luar jam kerja. Untuk sementara aku bantu jawab otomatis dulu supaya kakak tetap bisa dapat info awal, nanti di jam kerja tim kami bisa bantu cek lebih lanjut."
 
 Jangan ulangi info auto-reply kalau auto_reply_disclosed = true.
 
 ## ATURAN UTAMA
 
-- Bot hanya menjawab intention customer yang menanyakan harga / PL / pricelist undangan.
+- Bot hanya menjawab intention customer yang menanyakan harga / PL / pricelist undangan, atau jawaban customer terhadap pertanyaan bot sebelumnya.
 - Jangan menjawab pertanyaan teknis detail seperti jenis kertas, gramatur, finishing, ukuran, desain, revisi, alamat, lokasi, pengiriman, souvenir, atau topik lain.
+- Kalau customer sudah menyebut customer_name di chat sebelumnya, jangan tanya nama lagi.
 - Kalau customer sudah menyebut quantity di chat sebelumnya, jangan tanya quantity lagi.
 - Kalau customer sudah menyebut kapan undangan mau diterima, jangan tanya tanggal lagi.
 - Yang ditanyakan adalah tanggal undangan mau diterima, BUKAN tanggal wedding.
@@ -119,10 +126,34 @@ Jangan ulangi info auto-reply kalau auto_reply_disclosed = true.
 - Jangan pernah menulis nominal harga langsung di chat.
 - Kalau quantity kurang dari 30 pcs, jangan kirim link PL. Jelaskan minimum order.
 
+## NAMA CUSTOMER
+
+Selain quantity dan needed_date, kumpulkan juga customer_name.
+
+Jika customer menanyakan harga / PL / pricelist dan customer_name belum ada, tanya nama di awal flow.
+
+Aturan:
+- Tanya nama dengan natural, jangan kaku.
+- Jangan selalu menyapa pakai nama di setiap bubble, karena akan terasa cringe.
+- Nama boleh dipakai sesekali, maksimal 1 kali dalam satu giliran balasan.
+- Kalau belum tahu nama, tetap panggil "kak".
+- Kalau customer menyebut nama, simpan sebagai customer_name.
+- Jangan menahan flow hanya karena customer belum jawab nama. Kalau quantity dan needed_date sudah lengkap, tetap boleh lanjut share PL.
+
+Contoh tanya nama:
+"Boleh aku tau nama kakak siapa?"
+
+Contoh pakai nama yang benar:
+"Siaap kak Anna, untuk 100 pcs ya. Undangannya mau diterima tanggal berapa?"
+
+Contoh yang salah:
+"Baik kak Anna. Kak Anna mau berapa pcs? Nanti kak Anna bisa cek PL ini ya kak Anna."
+
 ## DATA YANG HARUS DIKUMPULKAN
 
-1. quantity = jumlah undangan
-2. needed_date = kapan undangan ingin diterima customer
+1. customer_name = nama customer
+2. quantity = jumlah undangan
+3. needed_date = kapan undangan ingin diterima customer
 
 Catatan ekstraksi quantity:
 - "500an" = 500
@@ -132,6 +163,9 @@ Catatan ekstraksi quantity:
 - "200-300" = "200-300", tapi untuk pemilihan link pakai angka terendah yaitu 200
 - "di bawah 150" berarti pakai kategori below_150
 - "150 ke atas" berarti pakai kategori above_150
+- "dikit 70an" = 70
+- "kayaknya 70an" = 70
+- Jangan menganggap "70an" sebagai kurang dari 30.
 
 Catatan needed_date:
 - "akhir Juli" simpan sebagai "akhir Juli"
@@ -169,6 +203,32 @@ Jangan terlalu hard selling.
 Jangan membuat klaim berlebihan.
 Jangan jelaskan terlalu panjang dalam satu bubble.
 
+## URGENCY / TIMELINE MEPET
+
+Kamu akan menerima RUNTIME_CONTEXT:
+- current_time
+- waiting_list_until_month
+- urgency_status
+
+Jika urgency_status = urgent_30_days_or_less:
+- Anggap timeline customer cukup mepet.
+- Jangan panik, tapi acknowledge secara natural.
+- Jelaskan bahwa proses undangan bukan hanya cetak, tapi ada proses desain dan persiapan.
+- Jelaskan bahwa Pentone punya layanan prioritas, bisa paling cepat mulai dari 7 hari kerja setelah desain final dikonfirmasi oleh customer.
+- Jelaskan bahwa harga layanan prioritas berbeda dari timeline normal.
+- Setelah itu arahkan ke waiting list dulu, karena slot designer terbatas.
+
+Contoh bubble urgency:
+"Wah, ini timeline-nya udah cukup mepet ya kak, karena undangan masih ada proses desain dan persiapan sebelum cetak."
+
+Contoh bubble prioritas:
+"Kita memang punya layanan prioritas yang bisa bantu produksi mulai dari 7 hari kerja setelah desain final kakak konfirmasi, tapi harganya berbeda dari timeline normal."
+
+Contoh bubble waiting list urgency:
+"Sebelum itu, better aku bantu cek waiting list dulu ya kak. Saat ini slot kita sudah waiting list sampai bulan [waiting_list_until_month], karena slot designer terbatas dan semua order custom dikerjakan satu-satu."
+
+Jangan gabungkan urgency, layanan prioritas, link PL, dan waiting list dalam satu bubble panjang.
+
 ## WAITING LIST POSITIONING
 
 Waiting list dijelaskan sebagai:
@@ -177,29 +237,48 @@ Waiting list dijelaskan sebagai:
 - slot biasanya baru terbuka kalau ada customer yang sudah selesai proses desain
 - update slot bisa berubah setiap hari
 - bot boleh bilang akan coba cek update slot terdekat
+- waiting list sampai bulan [waiting_list_until_month]
 
 Jangan bilang slot pasti tersedia.
 Jangan memaksa customer booking sekarang.
 Jangan terlalu menakut-nakuti customer.
 
-Contoh waiting list:
-"Oh iya kak, saat ini kita pakai sistem waiting list karena slot designer terbatas dan semua order custom dikerjakan satu-satu. Biasanya slot baru kebuka kalau ada customer yang sudah selesai proses desain, jadi nanti aku coba bantu cek update slot terdekatnya ya kak."
+Contoh waiting list normal:
+"Oh iya kak, saat ini kita pakai sistem waiting list karena slot designer terbatas dan semua order custom dikerjakan satu-satu. Saat ini slot kita sudah waiting list sampai bulan [waiting_list_until_month], jadi nanti aku coba bantu cek update slot terdekatnya ya kak."
 
 ## FLOW UTAMA
 
-### STEP A: Customer tanya harga / PL tapi belum ada quantity
+### STEP A: Customer tanya harga / PL tapi belum ada customer_name dan quantity
 
 Kalau auto_reply_disclosed = false:
 Bubble 1: sapaan + transparansi auto-reply
-Bubble 2: tanya quantity
+Bubble 2: tanya nama dan quantity
 
 Kalau auto_reply_disclosed = true:
-Bubble 1: tanya quantity
+Bubble 1: tanya nama dan quantity
 
-Contoh tanya quantity:
-"Siaap kak, boleh tau rencana butuh berapa pcs undangannya?"
+Contoh:
+"Boleh aku tau nama kakak siapa, dan rencana butuh berapa pcs undangannya?"
+
+Setelah tanya, berhenti dan tunggu jawaban customer.
+
+### STEP A2: Customer_name sudah ada tapi quantity belum ada
+
+Tanya quantity saja.
+
+Contoh:
+"Siaap kak, rencana butuh berapa pcs undangannya?"
 
 Setelah tanya quantity, berhenti dan tunggu jawaban customer.
+
+### STEP A3: Quantity sudah ada tapi customer_name belum ada dan needed_date belum ada
+
+Tanya nama dan tanggal terima.
+
+Contoh:
+"Untuk 100 pcs ya kak. Boleh aku tau nama kakak siapa, dan undangannya mau diterima tanggal berapa?"
+
+Setelah tanya, berhenti dan tunggu jawaban customer.
 
 ### STEP B: Quantity sudah ada, tapi needed_date belum ada
 
@@ -211,7 +290,7 @@ Kalau auto_reply_disclosed = true:
 Bubble 1: konfirmasi quantity + tanya tanggal undangan mau diterima
 
 Contoh:
-"Untuk 100 pcs ya kak. Undangannya mau diterima tanggal berapa?"
+"Untuk sekitar 70 pcs ya kak. Undangannya mau diterima tanggal berapa?"
 
 Setelah tanya tanggal terima, berhenti dan tunggu jawaban customer.
 
@@ -224,7 +303,7 @@ Lalu bubble berikutnya:
 
 Setelah itu berhenti dan tunggu jawaban customer.
 
-### STEP D: Quantity dan needed_date sudah lengkap
+### STEP D: Quantity dan needed_date sudah lengkap, timeline tidak mepet
 
 Kalau auto_reply_disclosed = false:
 Bubble 1: sapaan + transparansi auto-reply
@@ -239,9 +318,26 @@ Contoh:
 
 Bubble berikutnya: jelaskan waiting list.
 Contoh:
-"Oh iya kak, saat ini kita pakai sistem waiting list karena slot designer terbatas dan semua order custom dikerjakan satu-satu. Biasanya slot baru kebuka kalau ada customer yang sudah selesai proses desain, jadi nanti aku coba bantu cek update slot terdekatnya ya kak."
+"Oh iya kak, saat ini kita pakai sistem waiting list karena slot designer terbatas dan semua order custom dikerjakan satu-satu. Saat ini slot kita sudah waiting list sampai bulan [waiting_list_until_month], jadi nanti aku coba bantu cek update slot terdekatnya ya kak."
 
-### STEP E: Customer sudah pernah dikasih PL lalu tanya hal lain
+### STEP E: Quantity dan needed_date sudah lengkap, timeline mepet
+
+Kalau auto_reply_disclosed = false:
+Bubble 1: sapaan + transparansi auto-reply
+
+Bubble berikutnya:
+"Wah, ini timeline-nya udah cukup mepet ya kak, karena undangan masih ada proses desain dan persiapan sebelum cetak."
+
+Bubble berikutnya:
+"Kita memang punya layanan prioritas yang bisa bantu produksi mulai dari 7 hari kerja setelah desain final kakak konfirmasi, tapi harganya berbeda dari timeline normal."
+
+Bubble berikutnya:
+"Sebelum itu, better aku bantu cek waiting list dulu ya kak. Saat ini slot kita sudah waiting list sampai bulan [waiting_list_until_month], karena slot designer terbatas dan semua order custom dikerjakan satu-satu."
+
+Jika masih ada slot bubble tersisa, boleh share link PL sesuai qty:
+"Untuk estimasi PL sesuai qty kakak, bisa cek di sini ya: [PRICE_LIST_URL]"
+
+### STEP F: Customer sudah pernah dikasih PL lalu tanya hal lain
 
 Kalau pertanyaan masih soal harga / PL / qty / tanggal terima:
 Jawab singkat sesuai konteks.
@@ -252,10 +348,10 @@ Diam. Output action no_reply.
 ## EDGE CASES
 
 1. Customer bilang: "Mau PL"
-Kalau quantity belum ada, tanya quantity.
+Kalau customer_name dan quantity belum ada, tanya nama dan quantity.
 
 2. Customer bilang: "Harga 500 pcs berapa?"
-Kalau needed_date belum ada, tanya needed_date.
+Kalau needed_date belum ada, tanya needed_date. Kalau customer_name belum ada, boleh tanya nama juga.
 
 3. Customer bilang: "Mau PL 300 pcs, diterima akhir Agustus"
 Langsung kirim sequence: auto-reply disclosure jika belum, USP singkat, link 150 ke atas, waiting list.
@@ -299,9 +395,10 @@ Format:
       "delay_seconds": 3
     }
   ],
-  "step": "ask_quantity" | "ask_needed_date" | "minimum_qty" | "share_pricelist_sequence" | "post_pricelist" | "no_reply",
+  "step": "ask_identity_quantity" | "ask_quantity" | "ask_needed_date" | "minimum_qty" | "share_pricelist_sequence" | "urgent_timeline_sequence" | "post_pricelist" | "no_reply",
   "qualification_data": {
     "product": "undangan" | null,
+    "customer_name": null | "string",
     "quantity": null | number | "string",
     "needed_date": null | "string",
     "status": "qualifying" | "pricelist_shared" | "minimum_qty" | "ignored"
@@ -319,14 +416,13 @@ Format:
 Aturan tambahan:
 - Field qualification_data harus accumulate dari conversation sebelumnya, jangan reset.
 - handover selalu false untuk MVP ini.
-- price_list_url hanya diisi saat step = "share_pricelist_sequence".
+- price_list_url hanya diisi saat step = "share_pricelist_sequence" atau "urgent_timeline_sequence".
 - Jika action = "no_reply", replies harus array kosong.
 - Kalau mengirim pertanyaan ke customer, replies hanya boleh sampai pertanyaan tersebut dan jangan lanjut bubble lain.
 - Jangan pernah pakai emoji atau emotikon di text bubble.
 `;
 
 // ========== IN-MEMORY STORE ==========
-// Untuk MVP oke. Nanti kalau production lebih stabil, ganti Redis / DB.
 const conversationStore = new Map();
 
 // ========== UTILITIES ==========
@@ -348,6 +444,7 @@ function getOrCreateConversationState(key) {
       history: [],
       data: {
         product: null,
+        customer_name: null,
         quantity: null,
         needed_date: null,
         status: 'qualifying',
@@ -389,7 +486,6 @@ function getJakartaContext() {
   let hour = Number(parts.find((p) => p.type === 'hour')?.value || 0);
   const minute = Number(parts.find((p) => p.type === 'minute')?.value || 0);
 
-  // Intl kadang bisa return 24 untuk jam 00
   if (hour === 24) hour = 0;
 
   let greeting = 'selamat malam';
@@ -410,6 +506,24 @@ function getJakartaContext() {
     office_status: isOfficeHour ? 'office_hour' : 'outside_office_hour',
     iso_utc: now.toISOString(),
   };
+}
+
+function getJakartaDateObject() {
+  const jakartaString = new Date().toLocaleString('en-US', {
+    timeZone: BUSINESS_TIMEZONE,
+  });
+
+  return new Date(jakartaString);
+}
+
+function getWaitingListUntilMonth() {
+  const jakartaDate = getJakartaDateObject();
+  jakartaDate.setMonth(jakartaDate.getMonth() + 1);
+
+  return new Intl.DateTimeFormat('id-ID', {
+    month: 'long',
+    timeZone: BUSINESS_TIMEZONE,
+  }).format(jakartaDate);
 }
 
 function safeJsonParse(rawText) {
@@ -439,6 +553,21 @@ function safeJsonParse(rawText) {
   }
 }
 
+function stripEmojis(text) {
+  return String(text || '')
+    .replace(/[\u{1F300}-\u{1FAFF}]/gu, '')
+    .replace(/[\u{2600}-\u{27BF}]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function clampDelay(value) {
+  const delay = Number.isFinite(value) ? value : 2;
+  if (delay < 0) return 0;
+  if (delay > 5) return 5;
+  return delay;
+}
+
 function sanitizeReplies(parsed) {
   if (!parsed || parsed.action === 'no_reply') return [];
 
@@ -462,7 +591,6 @@ function sanitizeReplies(parsed) {
       }));
   }
 
-  // Backward compatibility kalau LLM masih return reply string
   if (typeof parsed.reply === 'string' && parsed.reply.trim()) {
     return [
       {
@@ -475,28 +603,12 @@ function sanitizeReplies(parsed) {
   return [];
 }
 
-function stripEmojis(text) {
-  // Remove most emoji/symbol pictographs. Keep normal punctuation.
-  return String(text || '')
-    .replace(/[\u{1F300}-\u{1FAFF}]/gu, '')
-    .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
-
-function clampDelay(value) {
-  const delay = Number.isFinite(value) ? value : 2;
-  if (delay < 0) return 0;
-  if (delay > 5) return 5;
-  return delay;
-}
-
 function mergeQualificationData(currentData, incomingData) {
   const next = { ...currentData };
 
   if (!incomingData || typeof incomingData !== 'object') return next;
 
-  for (const key of ['product', 'quantity', 'needed_date', 'status']) {
+  for (const key of ['product', 'customer_name', 'quantity', 'needed_date', 'status']) {
     if (
       incomingData[key] !== undefined &&
       incomingData[key] !== null &&
@@ -523,6 +635,276 @@ function mergeFlags(currentFlags, stateUpdate) {
   return next;
 }
 
+function extractQuantityFromText(text) {
+  const raw = String(text || '').toLowerCase();
+
+  const rangeMatch = raw.match(/(\d{1,5})\s*[-–]\s*(\d{1,5})\s*(pcs|pc|pieces|undangan)?/i);
+  if (rangeMatch) return `${rangeMatch[1]}-${rangeMatch[2]}`;
+
+  const explicitQtyMatch = raw.match(/(\d{1,5})\s*(pcs|pc|pieces|undangan|lembar|buah)/i);
+  if (explicitQtyMatch) {
+    const qty = Number(explicitQtyMatch[1]);
+    return Number.isFinite(qty) && qty > 0 ? qty : null;
+  }
+
+  const approxQtyMatch = raw.match(/(?:sekitar|kira-kira|kurang lebih|kayaknya|kayanya|dikit|sekitaran|estimasi|mungkin|+-)?\s*(\d{1,5})\s*(an|-an)/i);
+  if (approxQtyMatch) {
+    const qty = Number(approxQtyMatch[1]);
+    return Number.isFinite(qty) && qty > 0 ? qty : null;
+  }
+
+  const intentQtyMatch = raw.match(/(?:butuh|cetak|pesan|order|buat|mau)\s*(\d{1,5})/i);
+  if (intentQtyMatch) {
+    const qty = Number(intentQtyMatch[1]);
+    return Number.isFinite(qty) && qty > 0 ? qty : null;
+  }
+
+  return null;
+}
+
+function extractQuantityFloor(quantity) {
+  if (typeof quantity === 'number') return quantity;
+
+  const raw = String(quantity || '').toLowerCase();
+
+  const rangeMatch = raw.match(/(\d{1,5})\s*[-–]\s*(\d{1,5})/);
+  if (rangeMatch) return Number(rangeMatch[1]);
+
+  const singleMatch = raw.match(/(\d{1,5})/);
+  if (singleMatch) return Number(singleMatch[1]);
+
+  return null;
+}
+
+function getPriceListUrl(quantity) {
+  const qtyFloor = extractQuantityFloor(quantity);
+  if (qtyFloor === null) return null;
+  if (qtyFloor < 30) return null;
+  return qtyFloor < 150 ? PL_LINK_BELOW_150 : PL_LINK_150_UP;
+}
+
+function getUrgencyStatus(neededDateText) {
+  const parsedDate = parseNeededDate(neededDateText);
+  if (!parsedDate) {
+    return {
+      status: 'unknown',
+      parsed_needed_date: null,
+      days_until_needed: null,
+    };
+  }
+
+  const today = getJakartaDateObject();
+  today.setHours(0, 0, 0, 0);
+
+  const target = new Date(parsedDate);
+  target.setHours(0, 0, 0, 0);
+
+  const diffMs = target.getTime() - today.getTime();
+  const daysUntilNeeded = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+  return {
+    status:
+      daysUntilNeeded >= 0 && daysUntilNeeded <= 30
+        ? 'urgent_30_days_or_less'
+        : 'normal',
+    parsed_needed_date: target.toISOString().slice(0, 10),
+    days_until_needed: daysUntilNeeded,
+  };
+}
+
+function parseNeededDate(text) {
+  if (!text) return null;
+
+  const raw = String(text).toLowerCase();
+
+  const now = getJakartaDateObject();
+  const currentYear = now.getFullYear();
+
+  const monthMap = {
+    januari: 0,
+    jan: 0,
+    februari: 1,
+    feb: 1,
+    maret: 2,
+    mar: 2,
+    april: 3,
+    apr: 3,
+    mei: 4,
+    juni: 5,
+    jun: 5,
+    juli: 6,
+    jul: 6,
+    agustus: 7,
+    agu: 7,
+    ags: 7,
+    september: 8,
+    sep: 8,
+    oktober: 9,
+    okt: 9,
+    november: 10,
+    nov: 10,
+    desember: 11,
+    des: 11,
+  };
+
+  if (raw.includes('besok')) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    return d;
+  }
+
+  if (raw.includes('minggu depan')) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 7);
+    return d;
+  }
+
+  if (raw.includes('bulan depan')) {
+    const d = new Date(now);
+    d.setMonth(d.getMonth() + 1);
+    return d;
+  }
+
+  for (const [monthName, monthIndex] of Object.entries(monthMap)) {
+    if (!raw.includes(monthName)) continue;
+
+    let day = null;
+
+    const dayMonthRegex = new RegExp(`(\\d{1,2})\\s*${monthName}`, 'i');
+    const dayMonthMatch = raw.match(dayMonthRegex);
+
+    if (dayMonthMatch) {
+      day = Number(dayMonthMatch[1]);
+    } else if (raw.includes('awal')) {
+      day = 5;
+    } else if (raw.includes('tengah')) {
+      day = 15;
+    } else if (raw.includes('akhir')) {
+      day = 25;
+    } else {
+      day = 15;
+    }
+
+    let year = currentYear;
+
+    const yearMatch = raw.match(/20\d{2}/);
+    if (yearMatch) {
+      year = Number(yearMatch[0]);
+    }
+
+    const candidate = new Date(year, monthIndex, day);
+
+    if (candidate < now && !yearMatch) {
+      candidate.setFullYear(year + 1);
+    }
+
+    return candidate;
+  }
+
+  const numericDateMatch = raw.match(/(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?/);
+  if (numericDateMatch) {
+    const day = Number(numericDateMatch[1]);
+    const month = Number(numericDateMatch[2]) - 1;
+    let year = numericDateMatch[3] ? Number(numericDateMatch[3]) : currentYear;
+
+    if (year < 100) year += 2000;
+
+    const candidate = new Date(year, month, day);
+    if (candidate < now && !numericDateMatch[3]) {
+      candidate.setFullYear(year + 1);
+    }
+
+    return candidate;
+  }
+
+  return null;
+}
+
+function buildLocalFactsFromServer(conversationState) {
+  const qtyFloor = extractQuantityFloor(conversationState.data.quantity);
+  const priceListUrl = getPriceListUrl(conversationState.data.quantity);
+  const urgency = getUrgencyStatus(conversationState.data.needed_date);
+
+  return {
+    quantity_floor: qtyFloor,
+    price_list_url: priceListUrl,
+    urgency,
+  };
+}
+
+function applySafetyOverrides(parsed, conversationState, runtimeContext) {
+  if (!parsed) return parsed;
+
+  const currentQty = parsed?.qualification_data?.quantity ?? conversationState.data.quantity;
+  const qtyFloor = extractQuantityFloor(currentQty);
+
+  if (parsed.step === 'minimum_qty' && qtyFloor !== null && qtyFloor >= 30) {
+    return {
+      replies: [
+        {
+          text: `Untuk sekitar ${qtyFloor} pcs ya kak. Undangannya mau diterima tanggal berapa?`,
+          delay_seconds: 1,
+        },
+      ],
+      step: 'ask_needed_date',
+      qualification_data: {
+        product: 'undangan',
+        customer_name: conversationState.data.customer_name || parsed?.qualification_data?.customer_name || null,
+        quantity: qtyFloor,
+        needed_date: conversationState.data.needed_date || null,
+        status: 'qualifying',
+      },
+      handover: false,
+      price_list_url: null,
+      action: 'send_replies',
+      state_update: {},
+    };
+  }
+
+  const priceListUrl = getPriceListUrl(currentQty);
+
+  if (
+    parsed.price_list_url &&
+    priceListUrl &&
+    parsed.price_list_url !== priceListUrl
+  ) {
+    parsed.price_list_url = priceListUrl;
+
+    if (Array.isArray(parsed.replies)) {
+      parsed.replies = parsed.replies.map((item) => {
+        if (!item?.text) return item;
+
+        return {
+          ...item,
+          text: String(item.text)
+            .replace(PL_LINK_BELOW_150, priceListUrl)
+            .replace(PL_LINK_150_UP, priceListUrl),
+        };
+      });
+    }
+  }
+
+  if (
+    parsed.action !== 'no_reply' &&
+    Array.isArray(parsed.replies) &&
+    runtimeContext.waiting_list_until_month
+  ) {
+    parsed.replies = parsed.replies.map((item) => {
+      if (!item?.text) return item;
+
+      return {
+        ...item,
+        text: String(item.text).replace(
+          /\[waiting_list_until_month\]/g,
+          runtimeContext.waiting_list_until_month
+        ),
+      };
+    });
+  }
+
+  return parsed;
+}
+
 // ========== LLM CALL ==========
 async function callLLM(conversationHistory, runtimeContext) {
   if (!LLM_API_KEY) {
@@ -535,7 +917,6 @@ ${JSON.stringify(runtimeContext, null, 2)}
 `;
 
   const systemWithRuntime = `${SYSTEM_PROMPT}\n\n${runtimePrompt}`;
-
   const safeHistory = trimHistory(conversationHistory);
 
   console.log('[LLM] Calling', LLM_PROVIDER, 'with', safeHistory.length, 'messages');
@@ -550,7 +931,7 @@ ${JSON.stringify(runtimeContext, null, 2)}
       },
       body: JSON.stringify({
         model: process.env.CLAUDE_MODEL || 'claude-haiku-4-5-20251001',
-        max_tokens: 1200,
+        max_tokens: 1400,
         temperature: 0.2,
         system: systemWithRuntime,
         messages: safeHistory,
@@ -580,7 +961,7 @@ ${JSON.stringify(runtimeContext, null, 2)}
       },
       body: JSON.stringify({
         model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-        max_tokens: 1200,
+        max_tokens: 1400,
         temperature: 0.2,
         messages: [
           { role: 'system', content: systemWithRuntime },
@@ -606,7 +987,7 @@ ${JSON.stringify(runtimeContext, null, 2)}
   throw new Error(`Unsupported LLM_PROVIDER: ${LLM_PROVIDER}`);
 }
 
-// ========== CHATWOOT: SEND MESSAGE ==========
+// ========== CHATWOOT ==========
 async function sendReply(accountId, conversationId, message) {
   if (!message || !message.trim()) return;
 
@@ -638,7 +1019,10 @@ async function sendRepliesSequentially(accountId, conversationId, replies) {
   for (let i = 0; i < replies.length; i += 1) {
     const item = replies[i];
 
-    const delaySeconds = i === 0 ? clampDelay(item.delay_seconds ?? 0) : clampDelay(item.delay_seconds ?? 2);
+    const delaySeconds = i === 0
+      ? clampDelay(item.delay_seconds ?? 0)
+      : clampDelay(item.delay_seconds ?? 2);
+
     if (delaySeconds > 0) {
       await sleep(delaySeconds * 1000);
     }
@@ -648,23 +1032,21 @@ async function sendRepliesSequentially(accountId, conversationId, replies) {
   }
 }
 
-// ========== CHATWOOT: UPDATE CUSTOM ATTRIBUTES ==========
 async function updateAttributes(accountId, conversationId, qualData) {
   if (!qualData || typeof qualData !== 'object') return;
 
   const customAttributes = {
     product: qualData.product,
+    customer_name: qualData.customer_name,
     quantity: qualData.quantity,
     needed_date: qualData.needed_date,
     lead_status: qualData.status,
   };
 
-  // Buang undefined supaya gak bikin field aneh.
   Object.keys(customAttributes).forEach((key) => {
     if (customAttributes[key] === undefined) delete customAttributes[key];
   });
 
-  // Endpoint utama Chatwoot custom attributes.
   const primaryUrl =
     `${CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/custom_attributes`;
 
@@ -687,7 +1069,6 @@ async function updateAttributes(accountId, conversationId, qualData) {
   const primaryError = await res.text();
   console.warn('[Chatwoot] Custom attributes primary endpoint failed:', res.status, primaryError.slice(0, 300));
 
-  // Fallback: beberapa setup Chatwoot lebih aman update via conversation PATCH.
   const fallbackUrl =
     `${CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}`;
 
@@ -712,7 +1093,6 @@ async function updateAttributes(accountId, conversationId, qualData) {
   console.log('[Chatwoot] Custom attributes updated via fallback:', res.status);
 }
 
-// ========== CHATWOOT: HANDOVER TO HUMAN ==========
 async function handoverToHuman(accountId, conversationId) {
   const res = await fetch(
     `${CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/toggle_status`,
@@ -770,20 +1150,37 @@ async function processIncomingMessage(reqBody) {
     content,
   });
 
+  const extractedQty = extractQuantityFromText(content);
+
+  if (
+    extractedQty !== null &&
+    (conversationState.data.quantity === null || conversationState.data.quantity === undefined)
+  ) {
+    conversationState.data.quantity = extractedQty;
+  }
+
+  const localFacts = buildLocalFactsFromServer(conversationState);
+
   const runtimeContext = {
     current_time: jakartaContext,
     greeting: jakartaContext.greeting,
     office_status: jakartaContext.office_status,
+    waiting_list_until_month: getWaitingListUntilMonth(),
+    urgency_status: localFacts.urgency.status,
+    urgency_details: localFacts.urgency,
     conversation_state: {
       qualification_data: conversationState.data,
       flags: conversationState.flags,
     },
+    server_extracted_facts: localFacts,
     pricelist_links: {
       below_150: PL_LINK_BELOW_150,
       above_or_equal_150: PL_LINK_150_UP,
     },
     business_rules: {
       minimum_quantity: 30,
+      urgent_timeline_days: 30,
+      priority_production_fastest: '7 hari kerja setelah desain final dikonfirmasi',
       below_150_link_rule: 'quantity < 150',
       above_150_link_rule: 'quantity >= 150',
       scope: 'Only answer price list / price / PL questions for wedding invitations. Otherwise no reply.',
@@ -808,16 +1205,16 @@ async function processIncomingMessage(reqBody) {
     return;
   }
 
+  parsed = applySafetyOverrides(parsed, conversationState, runtimeContext);
+
   const replies = sanitizeReplies(parsed);
 
-  // Simpan raw response ke history, tapi jangan sampai kepanjangan.
   conversationState.history.push({
     role: 'assistant',
     content: rawResponse,
   });
   conversationState.history = trimHistory(conversationState.history, 24);
 
-  // Update state dari parsed.
   conversationState.data = mergeQualificationData(
     conversationState.data,
     parsed.qualification_data
@@ -828,22 +1225,30 @@ async function processIncomingMessage(reqBody) {
     parsed.state_update
   );
 
-  // Safety: kalau action no_reply atau tidak ada bubble, jangan kirim apa-apa.
   if (parsed.action === 'no_reply' || replies.length === 0) {
     console.log(`[Chat ${conversationId}] No reply.`);
+    conversationStore.set(key, conversationState);
     return;
   }
 
-  // Kirim bubble satu per satu dengan delay.
   await sendRepliesSequentially(accountId, conversationId, replies);
 
-  // Kalau sudah kirim reply pertama untuk lead yang relevant, anggap auto-reply sudah disclosed.
   conversationState.flags.auto_reply_disclosed = true;
 
-  // Update custom attributes di Chatwoot.
+  if (parsed.step === 'share_pricelist_sequence' || parsed.step === 'urgent_timeline_sequence') {
+    conversationState.flags.pricelist_shared = true;
+  }
+
+  if (
+    parsed.step === 'share_pricelist_sequence' ||
+    parsed.step === 'urgent_timeline_sequence' ||
+    parsed.state_update?.waiting_list_explained
+  ) {
+    conversationState.flags.waiting_list_explained = true;
+  }
+
   await updateAttributes(accountId, conversationId, conversationState.data);
 
-  // MVP fase ini default tidak handover.
   if (parsed.handover) {
     await handoverToHuman(accountId, conversationId);
     console.log(`[Chat ${conversationId}] Handover to human`);
@@ -861,7 +1266,6 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Balas webhook cepat supaya Chatwoot gak timeout.
     res.sendStatus(200);
 
     processIncomingMessage(req.body).catch((err) => {
@@ -876,17 +1280,18 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ========== TEST / HEALTH CHECK ==========
+// ========== HEALTH CHECK ==========
 app.get('/', (req, res) => {
   const jakartaContext = getJakartaContext();
 
   res.json({
     status: 'ok',
     service: 'Pentone Pricelist Bot',
-    version: 'mvp-pricelist-v1',
+    version: 'mvp-pricelist-v2',
     provider: LLM_PROVIDER,
     allowed_inbox_id: ALLOWED_INBOX_ID,
     jakarta_context: jakartaContext,
+    waiting_list_until_month: getWaitingListUntilMonth(),
   });
 });
 
@@ -901,6 +1306,11 @@ app.get('/debug/conversations', (req, res) => {
   }));
 
   res.json(data);
+});
+
+app.post('/debug/reset', (req, res) => {
+  conversationStore.clear();
+  res.json({ status: 'ok', message: 'conversationStore cleared' });
 });
 
 // ========== START SERVER ==========
