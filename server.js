@@ -561,6 +561,9 @@ function getOrCreateConversationState(key) {
         auto_reply_disclosed: false,
         pricelist_shared: false,
         waiting_list_explained: false,
+        usp_delivered: false,
+        human_takeover: false,
+        bot_completed: false,
         skipped: false,
       },
       created_at: new Date().toISOString(),
@@ -775,7 +778,7 @@ function mergeFlags(currentFlags, stateUpdate) {
 
   if (!stateUpdate || typeof stateUpdate !== 'object') return next;
 
-  for (const key of ['auto_reply_disclosed', 'pricelist_shared', 'waiting_list_explained']) {
+  for (const key of ['auto_reply_disclosed', 'pricelist_shared', 'waiting_list_explained', 'usp_delivered']) {
     if (typeof stateUpdate[key] === 'boolean') {
       next[key] = stateUpdate[key];
     }
@@ -1108,6 +1111,41 @@ function applySafetyOverrides(parsed, conversationState, runtimeContext) {
     });
   }
 
+  // ========== DUPLICATE PREVENTION ==========
+  if (Array.isArray(parsed.replies) && parsed.replies.length > 0) {
+
+    // Block duplicate PL link
+    if (conversationState.flags.pricelist_shared) {
+      parsed.replies = parsed.replies.filter(item => {
+        const t = String(item?.text || '').toLowerCase();
+        const hasPL = t.includes('drive.google.com') || t.includes('price') || t.includes('pricelist') || t.includes('cek pl');
+        if (hasPL) console.log('[Safety] Blocked duplicate PL link');
+        return !hasPL;
+      });
+      parsed.price_list_url = null;
+    }
+
+    // Block duplicate waiting list
+    if (conversationState.flags.waiting_list_explained) {
+      parsed.replies = parsed.replies.filter(item => {
+        const t = String(item?.text || '').toLowerCase();
+        const hasWL = t.includes('waiting list') && (t.includes('slot') || t.includes('terbatas'));
+        if (hasWL) console.log('[Safety] Blocked duplicate waiting list');
+        return !hasWL;
+      });
+    }
+
+    // Block duplicate USP (full custom + dedicated designer)
+    if (conversationState.flags.usp_delivered) {
+      parsed.replies = parsed.replies.filter(item => {
+        const t = String(item?.text || '').toLowerCase();
+        const hasUSP = t.includes('full custom') && (t.includes('dedicated designer') || t.includes('dikerjain satu-satu'));
+        if (hasUSP) console.log('[Safety] Blocked duplicate USP');
+        return !hasUSP;
+      });
+    }
+  }
+
   return parsed;
 }
 
@@ -1412,6 +1450,18 @@ async function processIncomingMessage(reqBody) {
     return;
   }
 
+  // SKIP: human sudah takeover, bot gak boleh nyaut lagi
+  if (conversationState.flags.human_takeover) {
+    console.log(`[Chat ${conversationId}] Skipped (human takeover)`);
+    return;
+  }
+
+  // SKIP: bot sudah selesai kualifikasi (PL + waiting list sudah dikirim)
+  if (conversationState.flags.bot_completed) {
+    console.log(`[Chat ${conversationId}] Skipped (bot completed)`);
+    return;
+  }
+
   // CEK: kalau ini pertama kali kita lihat conversation ini, cek apakah sudah ada balasan sebelumnya
   if (conversationState.history.length === 0) {
     const existing = await isExistingConversation(accountId, conversationId);
@@ -1548,6 +1598,26 @@ async function processIncomingMessage(reqBody) {
     conversationState.flags.waiting_list_explained = true;
   }
 
+  // Bot selesai kalau PL dan waiting list sudah dikirim
+  if (conversationState.flags.pricelist_shared && conversationState.flags.waiting_list_explained) {
+    conversationState.flags.bot_completed = true;
+    console.log(`[Chat ${conversationId}] Bot completed — will not respond anymore`);
+  }
+
+  // Auto-set usp_delivered kalau step USP atau bot kirim bubble yang mengandung USP
+  if (parsed.step === 'deliver_usp_ask_budget') {
+    conversationState.flags.usp_delivered = true;
+  }
+  if (Array.isArray(parsed.replies)) {
+    const hasUSPContent = parsed.replies.some(r => {
+      const t = String(r?.text || '').toLowerCase();
+      return t.includes('full custom') && (t.includes('dedicated designer') || t.includes('dikerjain satu-satu') || t.includes('garansi'));
+    });
+    if (hasUSPContent) {
+      conversationState.flags.usp_delivered = true;
+    }
+  }
+
   await updateAttributes(accountId, conversationId, conversationState.data);
 
   if (parsed.handover) {
@@ -1568,6 +1638,28 @@ app.post('/webhook', async (req, res) => {
     }
 
     res.sendStatus(200);
+
+    const messageType = req.body.message_type;
+    const accountId = req.body.account?.id;
+    const conversationId = req.body.conversation?.id;
+
+    // Detect HUMAN AGENT reply — kalau ada outgoing message yang bukan dari bot
+    if (messageType === 'outgoing' && accountId && conversationId) {
+      const key = getConversationKey(accountId, conversationId);
+      if (conversationStore.has(key)) {
+        const state = conversationStore.get(key);
+        // Chatwoot outgoing from agent has sender info; our API calls don't include sender
+        const sender = req.body.sender;
+        const senderType = sender?.type || sender?.account?.type || '';
+        // If there's a sender with a name (human agent), mark as taken over
+        if (sender && sender.name && !state.flags.human_takeover) {
+          state.flags.human_takeover = true;
+          conversationStore.set(key, state);
+          console.log(`[Chat ${conversationId}] Human takeover detected (agent: ${sender.name})`);
+        }
+      }
+      return;
+    }
 
     processIncomingMessage(req.body).catch((err) => {
       console.error('Async processor error:', err.message);
