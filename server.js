@@ -1,12 +1,16 @@
 import express from 'express';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Pastisukses8!';
-const ADMIN_DATA_FILE = './admin-data.json';
+const DATA_DIR_ADMIN = process.env.DATA_DIR || '/data';
+const ADMIN_DATA_FILE = `${DATA_DIR_ADMIN}/admin-data.json`;
+
+// Ensure data directory exists early
+try { mkdirSync(DATA_DIR_ADMIN, { recursive: true }); } catch {}
 
 // ========== CONFIG ==========
 const CHATWOOT_API_URL = process.env.CHATWOOT_API_URL || 'https://app.chatwoot.com';
@@ -530,8 +534,42 @@ function getActivePrompt() {
 
 function escapeHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-// ========== IN-MEMORY STORE ==========
-const conversationStore = new Map();
+// ========== PERSISTENT STORE ==========
+const DATA_DIR = process.env.DATA_DIR || '/data';
+const CONV_FILE = `${DATA_DIR}/conversations.json`;
+
+// Ensure data directory exists
+try { mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+
+// Load conversations from disk
+let _convData = {};
+try {
+  if (existsSync(CONV_FILE)) {
+    _convData = JSON.parse(readFileSync(CONV_FILE, 'utf-8'));
+    console.log(`[Store] Loaded ${Object.keys(_convData).length} conversations from disk`);
+  }
+} catch (e) { console.error('[Store] Failed to load conversations:', e.message); }
+
+// Debounced save — writes max every 3 seconds to avoid hammering disk
+let _saveTimer = null;
+function scheduleSave() {
+  if (_saveTimer) return;
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    try {
+      writeFileSync(CONV_FILE, JSON.stringify(_convData));
+    } catch (e) { console.error('[Store] Save error:', e.message); }
+  }, 3000);
+}
+
+const conversationStore = {
+  has(key) { return key in _convData; },
+  get(key) { return _convData[key] || undefined; },
+  set(key, value) { _convData[key] = value; scheduleSave(); },
+  delete(key) { delete _convData[key]; scheduleSave(); },
+  entries() { return Object.entries(_convData); },
+  clear() { _convData = {}; scheduleSave(); },
+};
 
 // ========== UTILITIES ==========
 function sleep(ms) {
@@ -1232,6 +1270,9 @@ ${JSON.stringify(runtimeContext, null, 2)}
 }
 
 // ========== CHATWOOT ==========
+// Track message IDs yang bot kirim, buat bedain dari human
+const botSentMessageIds = new Set();
+
 async function sendReply(accountId, conversationId, message) {
   if (!message || !message.trim()) return;
 
@@ -1257,6 +1298,16 @@ async function sendReply(accountId, conversationId, message) {
     console.error('[Chatwoot] Send reply error:', text.slice(0, 500));
     throw new Error(`Chatwoot sendReply failed: ${res.status}`);
   }
+
+  // Track message ID biar bisa bedain dari human
+  try {
+    const data = JSON.parse(text);
+    if (data.id) {
+      botSentMessageIds.add(data.id);
+      // Cleanup: hapus ID lama setelah 1 jam biar gak numpuk
+      setTimeout(() => botSentMessageIds.delete(data.id), 3600000);
+    }
+  } catch {}
 }
 
 async function sendRepliesSequentially(accountId, conversationId, replies) {
@@ -1376,6 +1427,27 @@ async function isExistingConversation(accountId, conversationId) {
   }
 }
 
+// ========== HUMAN AGENT CHECK ==========
+async function isAssignedToHuman(accountId, conversationId) {
+  try {
+    const res = await fetch(
+      `${CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}`,
+      { headers: { api_access_token: CHATWOOT_API_KEY } }
+    );
+    if (!res.ok) return false;
+    const data = await res.json();
+    // Kalau conversation punya assignee (agen manusia), berarti human udah takeover
+    const assignee = data.meta?.assignee;
+    if (assignee && assignee.id) {
+      console.log(`[Chat ${conversationId}] Assigned to agent: ${assignee.name || assignee.id}`);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 // ========== CUSTOMER NAME EXTRACTION ==========
 function capitalizeFirst(str) {
   return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
@@ -1450,7 +1522,7 @@ async function processIncomingMessage(reqBody) {
     return;
   }
 
-  // SKIP: human sudah takeover, bot gak boleh nyaut lagi
+  // SKIP: human sudah takeover (bales di conversation ini), bot gak boleh nyaut lagi
   if (conversationState.flags.human_takeover) {
     console.log(`[Chat ${conversationId}] Skipped (human takeover)`);
     return;
@@ -1642,22 +1714,29 @@ app.post('/webhook', async (req, res) => {
     const messageType = req.body.message_type;
     const accountId = req.body.account?.id;
     const conversationId = req.body.conversation?.id;
+    const messageId = req.body.id;
 
-    // Detect HUMAN AGENT reply — kalau ada outgoing message yang bukan dari bot
+    // Detect HUMAN AGENT reply — outgoing message yang BUKAN dari bot
     if (messageType === 'outgoing' && accountId && conversationId) {
+      // Kalau message ID ini ada di tracking bot → ini balesan bot sendiri, skip
+      if (messageId && botSentMessageIds.has(messageId)) {
+        return;
+      }
+      // Kalau BUKAN dari bot → ini human agent yang bales
       const key = getConversationKey(accountId, conversationId);
       if (conversationStore.has(key)) {
         const state = conversationStore.get(key);
-        // Chatwoot outgoing from agent has sender info; our API calls don't include sender
-        const sender = req.body.sender;
-        const senderType = sender?.type || sender?.account?.type || '';
-        // If there's a sender with a name (human agent), mark as taken over
-        if (sender && sender.name && !state.flags.human_takeover) {
+        if (!state.flags.human_takeover) {
           state.flags.human_takeover = true;
           conversationStore.set(key, state);
-          console.log(`[Chat ${conversationId}] Human takeover detected (agent: ${sender.name})`);
+          console.log(`[Chat ${conversationId}] Human takeover detected (outgoing message not from bot)`);
         }
       }
+      return;
+    }
+
+    // Skip non-incoming
+    if (messageType !== 'incoming') {
       return;
     }
 
