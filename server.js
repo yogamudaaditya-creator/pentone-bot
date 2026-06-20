@@ -1215,13 +1215,17 @@ ${JSON.stringify(runtimeContext, null, 2)}
         model: process.env.CLAUDE_MODEL || 'claude-haiku-4-5-20251001',
         max_tokens: 1400,
         temperature: 0.2,
-        system: systemWithRuntime,
+        system: [{ type: 'text', text: systemWithRuntime, cache_control: { type: 'ephemeral' } }],
         messages: safeHistory,
       }),
     });
 
     const data = await res.json();
     console.log('[LLM] Claude response:', JSON.stringify(data).slice(0, 700));
+    // Log cache performance
+    if (data.usage) {
+      console.log(`[LLM] Tokens — input: ${data.usage.input_tokens}, cached: ${data.usage.cache_read_input_tokens || 0}, output: ${data.usage.output_tokens}`);
+    }
 
     if (!res.ok || data.error) {
       throw new Error('Claude API error: ' + JSON.stringify(data.error || data));
@@ -1242,7 +1246,7 @@ ${JSON.stringify(runtimeContext, null, 2)}
         Authorization: `Bearer ${LLM_API_KEY}`,
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+        model: process.env.OPENAI_MODEL || 'gpt-4.1-nano',
         max_tokens: 1400,
         temperature: 0.2,
         messages: [
