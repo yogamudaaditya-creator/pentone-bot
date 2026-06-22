@@ -1274,8 +1274,6 @@ ${JSON.stringify(runtimeContext, null, 2)}
 }
 
 // ========== CHATWOOT ==========
-// Track message IDs yang bot kirim, buat bedain dari human
-const botSentMessageIds = new Set();
 
 async function sendReply(accountId, conversationId, message) {
   if (!message || !message.trim()) return;
@@ -1302,16 +1300,6 @@ async function sendReply(accountId, conversationId, message) {
     console.error('[Chatwoot] Send reply error:', text.slice(0, 500));
     throw new Error(`Chatwoot sendReply failed: ${res.status}`);
   }
-
-  // Track message ID biar bisa bedain dari human
-  try {
-    const data = JSON.parse(text);
-    if (data.id) {
-      botSentMessageIds.add(data.id);
-      // Cleanup: hapus ID lama setelah 1 jam biar gak numpuk
-      setTimeout(() => botSentMessageIds.delete(data.id), 3600000);
-    }
-  } catch {}
 }
 
 async function sendRepliesSequentially(accountId, conversationId, replies) {
@@ -1660,6 +1648,9 @@ async function processIncomingMessage(reqBody) {
 
   await sendRepliesSequentially(accountId, conversationId, replies);
 
+  // Track kapan bot terakhir kirim, buat bedain dari human
+  conversationState.lastBotSendAt = Date.now();
+
   conversationState.flags.auto_reply_disclosed = true;
 
   if (parsed.step === 'share_pricelist_sequence' || parsed.step === 'urgent_timeline_sequence') {
@@ -1718,22 +1709,25 @@ app.post('/webhook', async (req, res) => {
     const messageType = req.body.message_type;
     const accountId = req.body.account?.id;
     const conversationId = req.body.conversation?.id;
-    const messageId = req.body.id;
 
     // Detect HUMAN AGENT reply — outgoing message yang BUKAN dari bot
     if (messageType === 'outgoing' && accountId && conversationId) {
-      // Kalau message ID ini ada di tracking bot → ini balesan bot sendiri, skip
-      if (messageId && botSentMessageIds.has(messageId)) {
-        return;
-      }
-      // Kalau BUKAN dari bot → ini human agent yang bales
       const key = getConversationKey(accountId, conversationId);
       if (conversationStore.has(key)) {
         const state = conversationStore.get(key);
+        const lastBotSend = state.lastBotSendAt || 0;
+        const secondsSinceBotSend = (Date.now() - lastBotSend) / 1000;
+
+        // Kalau outgoing muncul dalam 60 detik setelah bot kirim → ini balesan bot sendiri
+        if (secondsSinceBotSend < 60) {
+          return;
+        }
+
+        // Lebih dari 60 detik → ini human agent yang bales
         if (!state.flags.human_takeover) {
           state.flags.human_takeover = true;
           conversationStore.set(key, state);
-          console.log(`[Chat ${conversationId}] Human takeover detected (outgoing message not from bot)`);
+          console.log(`[Chat ${conversationId}] Human takeover detected (outgoing ${Math.round(secondsSinceBotSend)}s after last bot send)`);
         }
       }
       return;
