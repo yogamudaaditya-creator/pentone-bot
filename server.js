@@ -1646,9 +1646,13 @@ async function processIncomingMessage(reqBody) {
     return;
   }
 
+  // Track kapan bot mulai kirim, buat bedain dari human
+  conversationState.lastBotSendAt = Date.now();
+  conversationStore.set(key, conversationState);
+
   await sendRepliesSequentially(accountId, conversationId, replies);
 
-  // Track kapan bot terakhir kirim, buat bedain dari human
+  // Update lagi setelah selesai kirim semua bubble
   conversationState.lastBotSendAt = Date.now();
 
   conversationState.flags.auto_reply_disclosed = true;
@@ -1718,12 +1722,12 @@ app.post('/webhook', async (req, res) => {
         const lastBotSend = state.lastBotSendAt || 0;
         const secondsSinceBotSend = (Date.now() - lastBotSend) / 1000;
 
-        // Kalau outgoing muncul dalam 60 detik setelah bot kirim → ini balesan bot sendiri
-        if (secondsSinceBotSend < 60) {
+        // Kalau outgoing muncul dalam 120 detik setelah bot kirim → ini balesan bot sendiri
+        if (secondsSinceBotSend < 120) {
           return;
         }
 
-        // Lebih dari 60 detik → ini human agent yang bales
+        // Lebih dari 120 detik → ini human agent yang bales
         if (!state.flags.human_takeover) {
           state.flags.human_takeover = true;
           conversationStore.set(key, state);
