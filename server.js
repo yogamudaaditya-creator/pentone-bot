@@ -94,7 +94,7 @@ Contoh tone yang salah:
 
 - Satu bubble chat hanya boleh membahas satu topik utama.
 - Boleh mengirim beberapa bubble dalam satu giliran, tapi hanya kalau customer sudah memberikan info yang cukup dan bot tidak perlu menunggu jawaban customer.
-- Setiap bubble harus punya delay 2 sampai 5 detik.
+- Setiap bubble harus punya delay 5 sampai 8 detik.
 - Jangan kirim beberapa bubble sekaligus tanpa jeda.
 - Jangan kirim lebih dari 4 bubble dalam satu giliran.
 - Kalau bubble berisi pertanyaan ke customer, normalnya berhenti di bubble itu dan jangan kirim bubble lanjutan.
@@ -712,9 +712,9 @@ function stripEmojis(text) {
 }
 
 function clampDelay(value) {
-  const delay = Number.isFinite(value) ? value : 2;
+  const delay = Number.isFinite(value) ? value : 5;
   if (delay < 0) return 0;
-  if (delay > 5) return 5;
+  if (delay > 10) return 10;
   return delay;
 }
 
@@ -1306,16 +1306,16 @@ async function sendRepliesSequentially(accountId, conversationId, replies) {
   for (let i = 0; i < replies.length; i += 1) {
     const item = replies[i];
 
-    const delaySeconds = i === 0
-      ? clampDelay(item.delay_seconds ?? 0)
-      : clampDelay(item.delay_seconds ?? 2);
+    // Bubble pertama: minimal delay. Bubble berikutnya: random 5-8 detik biar natural
+    const defaultDelay = i === 0 ? 0 : Math.floor(Math.random() * 4) + 5;
+    const delaySeconds = clampDelay(item.delay_seconds ?? defaultDelay);
 
     if (delaySeconds > 0) {
       await sleep(delaySeconds * 1000);
     }
 
     await sendReply(accountId, conversationId, item.text);
-    console.log(`[Chat ${conversationId}] Bot sent bubble ${i + 1}/${replies.length}: ${item.text}`);
+    console.log(`[Chat ${conversationId}] Bot sent bubble ${i + 1}/${replies.length} (delay ${delaySeconds}s): ${item.text}`);
   }
 }
 
