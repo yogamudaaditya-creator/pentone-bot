@@ -776,7 +776,9 @@ function sanitizeReplies(parsed, conversationState) {
       .filter((item) => item.text.length > 0)
       .slice(0, 4)
       .map((item, index) => ({
-        text: enforceKakAddressing(stripEmojis(item.text), customerName),
+        text: index === 0
+          ? enforceKakAddressing(stripEmojis(item.text), customerName)
+          : stripEmojis(item.text),
         delay_seconds: clampDelay(index === 0 ? Math.min(item.delay_seconds, 1) : item.delay_seconds),
       }));
   }
