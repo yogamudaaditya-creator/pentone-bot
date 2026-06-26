@@ -1816,6 +1816,56 @@ ${items || '<p style="color:#666;font-size:13px">Belum ada rules.</p>'}<hr>
 <div><label>Delay max (detik)</label><input type="number" name="delayMax" value="${adminData.settings.delayMax||5}" style="width:80px"></div></div>
 <label>Pesan offline (kalau bot non-aktif)</label><textarea name="offlineMessage" style="min-height:80px">${escapeHtml(adminData.settings.offlineMessage||'')}</textarea><br><br>
 <button type="submit" class="btn btn-primary">Save Settings</button></form></div>`;
+  } else if (tab === 'live') {
+    const allChats = Array.from(conversationStore.entries());
+    // Sort by updated_at desc
+    allChats.sort((a, b) => new Date(b[1].updated_at || 0) - new Date(a[1].updated_at || 0));
+
+    let chatItems = allChats.slice(0, 50).map(([key, state]) => {
+      const d = state.data || {};
+      const f = state.flags || {};
+      const convId = key.split('-')[1] || key;
+
+      // Status badge
+      let status = 'Bot aktif';
+      let statusColor = '#065f46';
+      if (f.human_takeover) { status = 'Human takeover'; statusColor = '#1e3a8a'; }
+      else if (f.bot_completed) { status = 'Selesai (PL terkirim)'; statusColor = '#374151'; }
+      else if (f.skipped) { status = 'Skipped'; statusColor = '#374151'; }
+
+      const check = (v) => v ? `<span style="color:#6ee7b7">✓ ${escapeHtml(String(v))}</span>` : '<span style="color:#f87171">✗ belum</span>';
+
+      return `<div class="item">
+        <div class="ic">
+          <strong>Chat #${escapeHtml(convId)}</strong>
+          <span style="display:inline-block;background:${statusColor};color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;margin-left:8px">${status}</span>
+          <p style="margin-top:8px">
+            Nama: ${check(d.customer_name)} &nbsp;|&nbsp;
+            Qty: ${check(d.quantity)} &nbsp;|&nbsp;
+            Tanggal: ${check(d.needed_date)}
+          </p>
+          <p style="color:#666;font-size:11px;margin-top:4px">
+            Pesan: ${state.history ? state.history.length : 0} &nbsp;|&nbsp;
+            PL terkirim: ${f.pricelist_shared ? 'ya' : 'belum'} &nbsp;|&nbsp;
+            Update: ${state.updated_at ? new Date(state.updated_at).toLocaleString('id-ID', {timeZone:'Asia/Jakarta'}) : '-'}
+          </p>
+        </div>
+        <form method="POST" action="/admin/chat/reset?token=${t}" style="margin:0" onsubmit="return confirm('Reset chat ini? Bot akan mulai dari awal lagi.')">
+          <input type="hidden" name="key" value="${escapeHtml(key)}">
+          <button type="submit" class="btn btn-danger">Reset</button>
+        </form>
+      </div>`;
+    }).join('');
+
+    content = `${savedBanner}<div class="card">
+      <h2>Live Chats</h2>
+      <p class="desc">Semua percakapan yang lagi/pernah jalan. Klik Reset kalau ada chat yang nyangkut.</p>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <a href="/admin?tab=live&token=${t}" class="btn" style="background:#333;color:#fff;text-decoration:none;display:inline-block">🔄 Refresh</a>
+        <span style="color:#666;font-size:13px;align-self:center">Total: ${allChats.length} chat</span>
+      </div>
+      ${chatItems || '<p style="color:#666;font-size:13px">Belum ada percakapan.</p>'}
+    </div>`;
   }
 
   res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pentone Bot Admin</title>
@@ -1839,6 +1889,7 @@ hr{border:none;border-top:1px solid #333;margin:16px 0}</style></head>
 <a href="/admin?tab=knowledge&token=${t}" class="tab ${tab==='knowledge'?'active':''}">Knowledge Base</a>
 <a href="/admin?tab=rules&token=${t}" class="tab ${tab==='rules'?'active':''}">Rules</a>
 <a href="/admin?tab=settings&token=${t}" class="tab ${tab==='settings'?'active':''}">Settings</a>
+<a href="/admin?tab=live&token=${t}" class="tab ${tab==='live'?'active':''}">Live Chats</a>
 </div>${content}</div></body></html>`);
 });
 
@@ -1879,6 +1930,15 @@ app.post('/admin/settings', (req,res) => {
   adminData.settings.delayMax = parseInt(req.body.delayMax)||5;
   adminData.settings.offlineMessage = req.body.offlineMessage; saveAdminData();
   res.redirect(`/admin?tab=settings&token=${encodeURIComponent(req.query.token)}&saved=1`);
+});
+app.post('/admin/chat/reset', (req,res) => {
+  if(req.query.token!==ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+  const key = req.body.key;
+  if (key && conversationStore.has(key)) {
+    conversationStore.delete(key);
+    console.log(`[Admin] Chat reset: ${key}`);
+  }
+  res.redirect(`/admin?tab=live&token=${encodeURIComponent(req.query.token)}&saved=1`);
 });
 
 // ========== HEALTH CHECK ==========
