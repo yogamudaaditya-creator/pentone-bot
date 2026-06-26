@@ -140,6 +140,7 @@ Jangan ulangi info auto-reply kalau auto_reply_disclosed = true.
 - Tanyakan apakah customer sudah punya range budget.
 - Jelaskan bahwa kalau customer punya referensi undangan Pentone dari Instagram atau TikTok, customer boleh kirim referensinya agar nanti bisa dibantu hitungkan / pilihkan specs yang lebih sesuai.
 - Setelah itu, sambil menunggu jawaban budget atau referensi, baru kirim link PL sebagai gambaran paket standar sesuai quantity.
+- PENTING: Kalau customer mengirim gambar/video referensi (ditandai dengan "[customer mengirim gambar/video referensi tanpa teks]" atau customer bilang sudah kirim referensi), acknowledge dulu: "Makasih referensinya kak, noted ya. Nanti tim kami bantu hitungkan sesuai detail dan qty kakak." Lalu kalau quantity dan needed_date sudah lengkap, lanjut kirim link PL sebagai gambaran paket standar sambil menunggu. JANGAN diam ketika customer kirim referensi.
 - Setelah share link PL, jelaskan waiting list kalau masih ada slot bubble.
 - Jangan pernah menulis nominal harga langsung di chat.
 - Kalau quantity kurang dari 30 pcs, jangan kirim link PL. Jelaskan minimum order.
@@ -1486,10 +1487,19 @@ function extractCustomerName(content, conversationState) {
 // ========== MAIN PROCESSOR ==========
 async function processIncomingMessage(reqBody) {
   const messageType = reqBody.message_type;
-  const content = reqBody.content;
+  let content = reqBody.content;
   const accountId = reqBody.account?.id;
   const conversationId = reqBody.conversation?.id;
   const inboxId = Number(reqBody.conversation?.inbox_id);
+
+  // Cek apakah ada attachment (gambar/video/file)
+  const attachments = reqBody.attachments || reqBody.conversation?.messages?.[0]?.attachments || [];
+  const hasAttachment = Array.isArray(attachments) && attachments.length > 0;
+
+  // Kalau ada attachment tapi teks kosong, isi placeholder biar bot tetap proses
+  if (hasAttachment && (!content || !content.trim())) {
+    content = '[customer mengirim gambar/video referensi tanpa teks]';
+  }
 
   // Skip kalau bukan incoming message atau data penting kosong.
   // Bot aktif di semua inbox.
