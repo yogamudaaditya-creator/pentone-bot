@@ -424,6 +424,32 @@ Jawab singkat sesuai konteks.
 Kalau pertanyaan di luar itu:
 Diam. Output action no_reply.
 
+### BRANCHING AWAL: Undangan atau Souvenir
+
+Kalau customer di awal chat minta PL / harga / info TANPA menyebut "undangan" secara spesifik (misal cuma "minta PL dong", "harga berapa?", "mau tanya dong"):
+Tanya dulu: "Boleh tau kak, kakak butuh info untuk undangan, souvenir, atau dua-duanya?"
+BERHENTI dan tunggu jawaban.
+
+Step ini = "ask_product_type"
+
+Kalau customer jawab SOUVENIR:
+Bubble 1: "Untuk souvenir, kita punya koleksi yang bisa di-custom sesuai tema acara kakak."
+Bubble 2: "Kakak bisa langsung lihat-lihat koleksinya di sini ya: https://pentone.id/wedding-souvenir"
+Bubble 3: "Kalau ada yang mau ditanyakan, nanti tim kami bisa bantu."
+Step ini = "souvenir_info"
+Setelah ini bot completed.
+
+Kalau customer jawab UNDANGAN:
+Lanjut flow kualifikasi undangan seperti biasa (tanya nama + qty, dst).
+
+Kalau customer jawab DUA-DUANYA:
+Bubble 1: "Siap kak! Untuk souvenir, kakak bisa langsung cek koleksi kita di https://pentone.id/wedding-souvenir ya."
+Bubble 2: "Nah sekarang aku bantu arahin untuk undangannya dulu ya kak."
+Lalu lanjut flow kualifikasi undangan seperti biasa.
+
+Kalau customer dari awal sudah jelas menyebut "undangan" (misal "PL undangan", "harga undangan"):
+JANGAN tanya undangan/souvenir, langsung masuk flow kualifikasi undangan.
+
 ## EDGE CASES
 
 1. Customer bilang: "Mau PL"
@@ -454,8 +480,8 @@ Diam. Jangan balas.
 9. Customer bilang: "Mau undangan"
 Kalau tidak menanyakan harga / PL / pricelist, diam. Jangan balas.
 
-10. Customer bertanya soal souvenir
-Diam. Jangan balas untuk MVP fase ini.
+10. Customer bertanya soal souvenir di awal atau tengah percakapan
+Kasih info souvenir: "Untuk souvenir, kakak bisa langsung cek koleksi kita di https://pentone.id/wedding-souvenir ya kak." Lalu tanya apakah juga butuh undangan. Kalau iya, lanjut flow undangan.
 
 ## FORMAT OUTPUT WAJIB JSON
 
@@ -474,7 +500,7 @@ Format:
       "delay_seconds": 3
     }
   ],
-  "step": "ask_identity_quantity" | "ask_quantity" | "ask_needed_date" | "minimum_qty" | "deliver_usp_ask_budget" | "share_pricelist_sequence" | "urgent_timeline_sequence" | "post_pricelist" | "no_reply",
+  "step": "ask_identity_quantity" | "ask_quantity" | "ask_needed_date" | "minimum_qty" | "deliver_usp_ask_budget" | "share_pricelist_sequence" | "urgent_timeline_sequence" | "post_pricelist" | "ask_product_type" | "souvenir_info" | "no_reply",
   "qualification_data": {
     "product": "undangan" | null,
     "customer_name": null | "string",
@@ -572,6 +598,9 @@ const conversationStore = {
   clear() { _convData = {}; scheduleSave(); },
 };
 
+// Debounce buffer untuk pesan beruntun (gambar/teks)
+const pendingMessages = new Map();
+
 // ========== UTILITIES ==========
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -603,6 +632,8 @@ function getOrCreateConversationState(key) {
         usp_delivered: false,
         human_takeover: false,
         bot_completed: false,
+        souvenir_asked: false,
+        souvenir_handled: false,
         skipped: false,
       },
       created_at: new Date().toISOString(),
@@ -819,7 +850,7 @@ function mergeFlags(currentFlags, stateUpdate) {
 
   if (!stateUpdate || typeof stateUpdate !== 'object') return next;
 
-  for (const key of ['auto_reply_disclosed', 'pricelist_shared', 'waiting_list_explained', 'usp_delivered']) {
+  for (const key of ['auto_reply_disclosed', 'pricelist_shared', 'waiting_list_explained', 'usp_delivered', 'souvenir_asked', 'souvenir_handled']) {
     if (typeof stateUpdate[key] === 'boolean') {
       next[key] = stateUpdate[key];
     }
@@ -1691,6 +1722,16 @@ async function processIncomingMessage(reqBody) {
   if (parsed.step === 'deliver_usp_ask_budget') {
     conversationState.flags.usp_delivered = true;
   }
+
+  // Auto-set souvenir flags
+  if (parsed.step === 'ask_product_type') {
+    conversationState.flags.souvenir_asked = true;
+  }
+  if (parsed.step === 'souvenir_info') {
+    conversationState.flags.souvenir_handled = true;
+    conversationState.flags.bot_completed = true;
+    console.log(`[Chat ${conversationId}] Souvenir info sent — bot completed`);
+  }
   if (Array.isArray(parsed.replies)) {
     const hasUSPContent = parsed.replies.some(r => {
       const t = String(r?.text || '').toLowerCase();
@@ -1754,10 +1795,41 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    processIncomingMessage(req.body).catch((err) => {
-      console.error('Async processor error:', err.message);
-      console.error(err.stack);
-    });
+    // DEBOUNCE: kalau customer kirim beberapa pesan/gambar beruntun,
+    // tunggu 8 detik. Kalau ada pesan baru masuk, reset timer.
+    // Baru proses setelah customer berhenti kirim.
+    const dbKey = getConversationKey(accountId, conversationId);
+    if (pendingMessages.has(dbKey)) {
+      clearTimeout(pendingMessages.get(dbKey).timer);
+    }
+
+    const existing = pendingMessages.get(dbKey);
+    // Gabungkan teks dari pesan-pesan yang masuk beruntun
+    const combinedBody = existing ? existing.body : { ...req.body };
+    if (existing) {
+      // Tambahkan teks pesan baru ke pesan sebelumnya (kalau ada teks)
+      if (req.body.content && req.body.content.trim()) {
+        combinedBody.content = (combinedBody.content ? combinedBody.content + ' ' : '') + req.body.content;
+      }
+      // Kalau pesan baru punya attachment, tandai
+      const newAttachments = req.body.attachments || [];
+      if (Array.isArray(newAttachments) && newAttachments.length > 0) {
+        combinedBody.attachments = [...(combinedBody.attachments || []), ...newAttachments];
+      }
+    }
+
+    const timer = setTimeout(() => {
+      const pending = pendingMessages.get(dbKey);
+      pendingMessages.delete(dbKey);
+      if (pending) {
+        processIncomingMessage(pending.body).catch((err) => {
+          console.error('Async processor error:', err.message);
+          console.error(err.stack);
+        });
+      }
+    }, 8000);
+
+    pendingMessages.set(dbKey, { body: combinedBody, timer });
   } catch (err) {
     console.error('Webhook error:', err.message);
     if (!res.headersSent) {
