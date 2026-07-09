@@ -1558,7 +1558,62 @@ async function processIncomingMessage(reqBody) {
   }
 
   // SKIP: human sudah takeover (bales di conversation ini), bot gak boleh nyaut lagi
+  // KECUALI: di luar jam kerja → mini flow: tawarin call scheduling
   if (conversationState.flags.human_takeover) {
+    const jakartaNow = getJakartaContext();
+    const offlineStep = conversationState.offlineStep || 'not_sent';
+
+    if (!jakartaNow.is_office_hours && offlineStep !== 'done') {
+
+      if (offlineStep === 'not_sent') {
+        // Step 1: Tawarin call
+        conversationState.offlineStep = 'waiting_agreement';
+        conversationState.lastBotSendAt = Date.now();
+        conversationStore.set(key, conversationState);
+        await sendReply(accountId, conversationId,
+          'Halo kak, maaf karena sekarang sudah di luar jam operasional (08:00-17:00), saya belum bisa response. Ini balasan otomatis ya kak. Biar diskusi kita lebih enak dan gak terputus-putus, kalau besok saya jadwalkan diskusi singkat by call for 10 minutes apakah aman?'
+        );
+        console.log(`[Chat ${conversationId}] Sent call scheduling offer (human takeover + outside hours)`);
+        return;
+
+      } else if (offlineStep === 'waiting_agreement') {
+        // Step 2: Cek jawaban customer — setuju atau engga
+        const lower = content.toLowerCase();
+        const agreeWords = ['oke', 'ok', 'aman', 'boleh', 'siap', 'bisa', 'iya', 'ya', 'setuju', 'mau', 'gas', 'yuk', 'hayuk', 'can', 'yes', 'sure', 'baik', 'okey', 'okay', 'yoi', 'let\'s', 'yess', 'iyaa', 'yaa', 'okee', 'sip'];
+        const agrees = agreeWords.some(w => lower.includes(w));
+
+        if (agrees) {
+          conversationState.offlineStep = 'waiting_time';
+          conversationState.lastBotSendAt = Date.now();
+          conversationStore.set(key, conversationState);
+          await sendReply(accountId, conversationId,
+            'Siap kak! Kalau boleh tau, besok enaknya jam berapa ya kak?'
+          );
+          console.log(`[Chat ${conversationId}] Customer agreed to call, asking time`);
+        } else {
+          conversationState.offlineStep = 'done';
+          conversationState.lastBotSendAt = Date.now();
+          conversationStore.set(key, conversationState);
+          await sendReply(accountId, conversationId,
+            'Siap kak, gak apa-apa. Nanti begitu jam kerja tim kami akan langsung follow up via chat ya kak. Terima kasih!'
+          );
+          console.log(`[Chat ${conversationId}] Customer declined call, closing`);
+        }
+        return;
+
+      } else if (offlineStep === 'waiting_time') {
+        // Step 3: Customer kasih jam — acknowledge
+        conversationState.offlineStep = 'done';
+        conversationState.lastBotSendAt = Date.now();
+        conversationStore.set(key, conversationState);
+        await sendReply(accountId, conversationId,
+          'Noted kak, besok jam ' + content.trim() + ' ya. Nanti tim kami akan hubungi kakak. Terima kasih kak, selamat istirahat!'
+        );
+        console.log(`[Chat ${conversationId}] Call scheduled: ${content.trim()}`);
+        return;
+      }
+    }
+
     console.log(`[Chat ${conversationId}] Skipped (human takeover)`);
     return;
   }
