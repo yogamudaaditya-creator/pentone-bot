@@ -1627,26 +1627,15 @@ async function processIncomingMessage(reqBody) {
 
   // CEK: kalau ini pertama kali kita lihat conversation ini
   if (conversationState.history.length === 0) {
-    // Cek apakah conversation ini dibuat SEBELUM server boot
-    const convCreatedAt = reqBody.conversation?.created_at;
-    if (convCreatedAt) {
-      const createdTime = new Date(convCreatedAt).getTime();
-      if (createdTime < SERVER_BOOT_TIME) {
-        console.log(`[Chat ${conversationId}] Skipping — conversation created before server boot`);
-        conversationState.flags.skipped = true;
-        conversationStore.set(key, conversationState);
-        return;
-      }
-    }
-
-    // Fallback: cek apakah sudah ada outgoing messages
+    // Cek apakah sudah ada outgoing messages (dari bot atau agen sebelumnya)
     const existing = await isExistingConversation(accountId, conversationId);
     if (existing) {
-      console.log(`[Chat ${conversationId}] Skipping — already has outgoing messages`);
+      console.log(`[Chat ${conversationId}] Skipping — already has outgoing messages (existing conversation)`);
       conversationState.flags.skipped = true;
       conversationStore.set(key, conversationState);
       return;
     }
+    console.log(`[Chat ${conversationId}] New conversation — no prior outgoing messages, processing`);
   }
 
   conversationState.updated_at = new Date().toISOString();
