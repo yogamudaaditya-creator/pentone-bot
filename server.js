@@ -18,6 +18,7 @@ const CHATWOOT_API_KEY = process.env.CHATWOOT_API_KEY;
 const LLM_API_KEY = process.env.LLM_API_KEY;
 const LLM_PROVIDER = process.env.LLM_PROVIDER || 'claude';
 const PORT = process.env.PORT || 3000;
+const SERVER_BOOT_TIME = Date.now();
 
 const BUSINESS_TIMEZONE = 'Asia/Jakarta';
 
@@ -1624,8 +1625,21 @@ async function processIncomingMessage(reqBody) {
     return;
   }
 
-  // CEK: kalau ini pertama kali kita lihat conversation ini, cek apakah sudah ada balasan sebelumnya
+  // CEK: kalau ini pertama kali kita lihat conversation ini
   if (conversationState.history.length === 0) {
+    // Cek apakah conversation ini dibuat SEBELUM server boot
+    const convCreatedAt = reqBody.conversation?.created_at;
+    if (convCreatedAt) {
+      const createdTime = new Date(convCreatedAt).getTime();
+      if (createdTime < SERVER_BOOT_TIME) {
+        console.log(`[Chat ${conversationId}] Skipping — conversation created before server boot`);
+        conversationState.flags.skipped = true;
+        conversationStore.set(key, conversationState);
+        return;
+      }
+    }
+
+    // Fallback: cek apakah sudah ada outgoing messages
     const existing = await isExistingConversation(accountId, conversationId);
     if (existing) {
       console.log(`[Chat ${conversationId}] Skipping — already has outgoing messages`);
