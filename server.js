@@ -1564,7 +1564,7 @@ async function processIncomingMessage(reqBody) {
     const jakartaNow = getJakartaContext();
     const offlineStep = conversationState.offlineStep || 'not_sent';
 
-    if (!jakartaNow.is_office_hours && offlineStep !== 'done') {
+    if (jakartaNow.office_status !== 'office_hour' && offlineStep !== 'done') {
 
       if (offlineStep === 'not_sent') {
         // Step 1: Tawarin call
