@@ -602,6 +602,28 @@ const conversationStore = {
 // Debounce buffer untuk pesan beruntun (gambar/teks)
 const pendingMessages = new Map();
 
+// Lock per-conversation — mencegah 2 pesan yang lolos dari debounce window yang sama
+// (misal terpisah >8 detik) diproses BERBARENGAN untuk conversation yang sama,
+// yang menyebabkan bot mengirim balasan dobel.
+const activeProcessing = new Set();
+
+function processWhenFree(dbKey, body) {
+  if (activeProcessing.has(dbKey)) {
+    setTimeout(() => processWhenFree(dbKey, body), 1000);
+    return;
+  }
+
+  activeProcessing.add(dbKey);
+  processIncomingMessage(body)
+    .catch((err) => {
+      console.error('Async processor error:', err.message);
+      console.error(err.stack);
+    })
+    .finally(() => {
+      activeProcessing.delete(dbKey);
+    });
+}
+
 // ========== UTILITIES ==========
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1907,10 +1929,7 @@ app.post('/webhook', async (req, res) => {
       const pending = pendingMessages.get(dbKey);
       pendingMessages.delete(dbKey);
       if (pending) {
-        processIncomingMessage(pending.body).catch((err) => {
-          console.error('Async processor error:', err.message);
-          console.error(err.stack);
-        });
+        processWhenFree(dbKey, pending.body);
       }
     }, 8000);
 
