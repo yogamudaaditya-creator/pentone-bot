@@ -1780,12 +1780,21 @@ async function processIncomingMessage(reqBody) {
     conversationState.flags.pricelist_shared = true;
   }
 
-  if (
-    parsed.step === 'share_pricelist_sequence' ||
-    parsed.step === 'urgent_timeline_sequence' ||
-    parsed.state_update?.waiting_list_explained
-  ) {
+  // waiting_list_explained HANYA di-set kalau LLM eksplisit bilang begitu (state_update),
+  // atau kalau teks bubble yang beneran dikirim memang berisi penjelasan waiting list.
+  // (Sebelumnya di-set otomatis tiap step "share_pricelist_sequence" — salah, karena step yang
+  // sama dipakai baik saat kirim harga maupun saat kirim waiting list, jadi bot ketipu.)
+  if (parsed.state_update?.waiting_list_explained) {
     conversationState.flags.waiting_list_explained = true;
+  }
+  if (Array.isArray(parsed.replies)) {
+    const hasWaitingListContent = parsed.replies.some((r) => {
+      const t = String(r?.text || '').toLowerCase();
+      return t.includes('waiting list') && (t.includes('slot') || t.includes('terbatas'));
+    });
+    if (hasWaitingListContent) {
+      conversationState.flags.waiting_list_explained = true;
+    }
   }
 
   // Bot selesai kalau PL dan waiting list sudah dikirim
