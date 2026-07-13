@@ -636,6 +636,7 @@ function getOrCreateConversationState(key) {
         souvenir_asked: false,
         souvenir_handled: false,
         skipped: false,
+        offline_notice_sent: false,
       },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -1341,8 +1342,11 @@ async function sendRepliesSequentially(accountId, conversationId, replies) {
   for (let i = 0; i < replies.length; i += 1) {
     const item = replies[i];
 
-    // Bubble pertama: minimal delay. Bubble berikutnya: random 5-8 detik biar natural
-    const defaultDelay = i === 0 ? 0 : Math.floor(Math.random() * 4) + 5;
+    // Bubble pertama: minimal delay. Bubble berikutnya: random sesuai setting admin biar natural
+    const delayMin = Number.isFinite(adminData.settings.delayMin) ? adminData.settings.delayMin : 5;
+    const delayMax = Number.isFinite(adminData.settings.delayMax) ? adminData.settings.delayMax : 8;
+    const safeMax = Math.max(delayMin, delayMax);
+    const defaultDelay = i === 0 ? 0 : Math.floor(Math.random() * (safeMax - delayMin + 1)) + delayMin;
     const delaySeconds = clampDelay(item.delay_seconds ?? defaultDelay);
 
     if (delaySeconds > 0) {
@@ -1622,6 +1626,20 @@ async function processIncomingMessage(reqBody) {
   // SKIP: bot sudah selesai kualifikasi (PL + waiting list sudah dikirim)
   if (conversationState.flags.bot_completed) {
     console.log(`[Chat ${conversationId}] Skipped (bot completed)`);
+    return;
+  }
+
+  // SKIP: bot dimatikan manual dari admin panel — kirim pesan offline sekali, lalu diam
+  if (adminData.settings.botActive === false) {
+    if (!conversationState.flags.offline_notice_sent) {
+      conversationState.flags.offline_notice_sent = true;
+      conversationState.lastBotSendAt = Date.now();
+      conversationStore.set(key, conversationState);
+      const offlineMsg = adminData.settings.offlineMessage ||
+        'Makasih udah chat Pentone kak! Saat ini tim kami lagi offline, nanti kita follow up ya.';
+      await sendReply(accountId, conversationId, offlineMsg);
+    }
+    console.log(`[Chat ${conversationId}] Skipped (bot non-aktif dari admin panel)`);
     return;
   }
 
@@ -2097,6 +2115,8 @@ app.get('/', (req, res) => {
 });
 
 app.get('/debug/conversations', (req, res) => {
+  if (req.query.token !== ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
+
   const data = Array.from(conversationStore.entries()).map(([key, value]) => ({
     key,
     data: value.data,
@@ -2110,11 +2130,13 @@ app.get('/debug/conversations', (req, res) => {
 });
 
 app.get('/debug/reset', (req, res) => {
+  if (req.query.token !== ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
   conversationStore.clear();
   res.json({ status: 'ok', message: 'conversationStore cleared via GET' });
 });
 
 app.post('/debug/reset', (req, res) => {
+  if (req.query.token !== ADMIN_PASSWORD) return res.status(401).send('Unauthorized');
   conversationStore.clear();
   res.json({ status: 'ok', message: 'conversationStore cleared via POST' });
 });
